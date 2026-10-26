@@ -163,7 +163,11 @@ def main(argv):
             "  sudo dkp-pacman -S nds-dev\n"
             "devkitARM alone is not enough. The tree needs libnds, calico, and ndstool.\n"
             "Windows looks in C:\\devkitPro. macOS and Linux look in /opt/devkitpro\n"
-            "and ~/devkitpro. Or set DEVKITPRO to that directory."
+            "and ~/devkitpro. Or set DEVKITPRO to that directory.\n"
+            "\n"
+            "If you only want a playable ROM and already have lttp-ds-blank.nds,\n"
+            "you do not need DevKitPro — put zelda3.sfc next to easy/make_rom.py\n"
+            "and run that script instead. See docs/easy-build.md."
         )
         pause_if_windows_console()
         return code
@@ -187,24 +191,33 @@ def main(argv):
         extra_path.insert(0, posix(dk / "msys2" / "usr" / "bin"))
     env["PATH"] = os.pathsep.join(extra_path + [env.get("PATH", "")])
 
+    make_argv = list(argv)
+    building_blank = "blank" in make_argv
     try:
-        result = subprocess.call([make] + argv, cwd=str(ROOT), env=env)
+        result = subprocess.call([make] + make_argv, cwd=str(ROOT), env=env)
     except OSError as exc:
         code = fail("error: could not run make: %s" % exc)
         pause_if_windows_console()
         return code
 
     cleaning = "clean" in argv
-    if result == 0 and not cleaning and (ROOT / "lttp-ds.nds").is_file():
+    blank_nds = ROOT / "lttp-ds-blank.nds"
+    playable = ROOT / "lttp-ds.nds"
+    if result == 0 and not cleaning:
         print("")
-        print("Built %s" % (ROOT / "lttp-ds.nds"))
+        if building_blank and blank_nds.is_file():
+            print("Built %s" % blank_nds)
+            print("Ship that file with easy/make_rom.py (see docs/easy-build.md).")
+        elif playable.is_file():
+            print("Built %s" % playable)
     elif result != 0 and not cleaning:
         print("")
         print("Build failed. lttp-ds.nds was not created.")
         rom = ROOT / "vendor" / "zelda3" / "assets" / "zelda3.sfc"
         dat = ROOT / "zelda3_assets.dat"
-        if not rom.is_file() and not dat.is_file():
+        if not building_blank and not rom.is_file() and not dat.is_file():
             print("Put your USA ROM at vendor/zelda3/assets/zelda3.sfc.")
+            print("Or run: python3 build.py blank")
     pause_if_windows_console()
     return result
 

@@ -123,7 +123,7 @@ else
   export GAME_ICON := $(CURDIR)/$(BUILD)/$(notdir $(basename $(ICON))).grf
 endif
 
-.PHONY: $(BUILD) clean prepare-assets
+.PHONY: $(BUILD) clean prepare-assets blank
 
 $(BUILD): prepare-assets
 	@mkdir -p $@
@@ -131,13 +131,25 @@ $(BUILD): prepare-assets
 
 # zelda3_assets.dat from the project root, data/, or vendor/zelda3/, or
 # extracted from a USA ROM. Linked into the ARM9 binary below.
+# Set LTTP_BLANK=1 (or run `python3 build.py blank`) for a placeholder slot.
 prepare-assets:
 	$(SILENTMSG) assets
+ifeq ($(LTTP_BLANK),1)
+	$(SILENTCMD)"$(PYTHON)" "$(LTTP_ROOT)/platform/nds/prepare_assets.py" --blank
+else
 	$(SILENTCMD)"$(PYTHON)" "$(LTTP_ROOT)/platform/nds/prepare_assets.py"
+endif
+
+# Prebuilt cart with an empty asset slot. End users run easy/make_rom.py
+# with their USA .sfc to produce a playable lttp-ds.nds — no DevKitPro.
+blank:
+	@$(MAKE) LTTP_BLANK=1
+	@cp -f $(TARGET).nds $(TARGET)-blank.nds
+	@echo "Built $(TARGET)-blank.nds (for easy/make_rom.py)"
 
 clean:
 	@echo clean ...
-	@$(RM) -r $(BUILD) $(TARGET).elf $(TARGET).nds
+	@$(RM) -r $(BUILD) $(TARGET).elf $(TARGET).nds $(TARGET)-blank.nds
 	@$(MAKE) -C platform/nds/arm7 clean
 
 #---------------------------------------------------------------------------------

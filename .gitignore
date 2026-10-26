@@ -1,5 +1,7 @@
 /build/
+/dist/
 .venv/
+easy/.venv/
 *.elf
 *.map
 *.nds

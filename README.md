@@ -58,7 +58,23 @@ You can remap the controls however you like in the settings menu.
 
 ## Getting started
 
-### What you need
+> **You supply the ROM.** This project ships no Nintendo ROM and no game assets.
+
+### Easy path (no DevKitPro)
+
+If you only want a playable game and do not want to compile anything:
+
+1. Download the **easy** zip from [Releases](https://github.com/JimmyGlasscock/alttp-ds/releases) (blank `.nds` + scripts).
+2. Put your USA `zelda3.sfc` in that folder.
+3. Double-click `make_rom.bat` (Windows) or run `./make_rom.sh` (macOS/Linux).
+
+That writes **`lttp-ds.nds`**. Details: [docs/easy-build.md](docs/easy-build.md) and `easy/README.txt`.
+
+You still need Python 3.8+ with Pillow and PyYAML for asset extraction. You do **not** need DevKitPro.
+
+### Full build (developers)
+
+#### What you need
 
 - A legally obtained **USA** *A Link to the Past* ROM, named `zelda3.sfc`.
   SHA-256: `66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb`
@@ -80,7 +96,7 @@ You can remap the controls however you like in the settings menu.
 - Git.
 - To run it: [melonDS](https://melonds.melonemu.org/), or a DS, DS Lite, or DSi with a DLDI flashcart or Twilight Menu++.
 
-### 1. Clone
+#### 1. Clone
 
 The game logic is in the `vendor/zelda3` submodule, so clone with submodules:
 
@@ -91,11 +107,11 @@ cd alttp-ds
 
 If you already cloned without them: `git submodule update --init`.
 
-### 2. Add your ROM
+#### 2. Add your ROM
 
 Copy `zelda3.sfc` to `vendor/zelda3/assets/`.
 
-### 3. Build
+#### 3. Build
 
 From the project root:
 
@@ -105,9 +121,11 @@ python3 build.py
 
 On Windows, `py build.py` does the same thing. Either command uses `.venv` when the default Python is missing Pillow or PyYAML. `python3 build.py -j8` compiles in parallel. When it finishes, **`lttp-ds.nds`** is in the project root. If `zelda3.sfc` is missing, the build stops and does not write that file. Double-clicking `build.py` on Windows leaves the window open so you can read the error.
 
+To ship an easy-build blank cart (placeholder assets, no ROM data): `python3 build.py blank`, then `python3 tools/pack_easy_release.py`.
+
 If make stops with `target pattern contains no '%'`, dependency files in `platform/nds/arm7/build/` were written on Windows and still contain `C:` paths. Run `python3 build.py clean` and build again. The ARM7 makefile drops those files and the objects they belonged to, then compiles the voice driver again. An ARM7 object left behind without a dependency file is rebuilt too, so a Mac link cannot keep a Windows mixer.
 
-### 4. Run
+#### 4. Run
 
 `lttp-ds.nds` is generated with the game data inside it. If that data is not from a USA ROM, the bottom screen says `Invalid assets file` and the game waits there.
 
@@ -132,6 +150,7 @@ alttp-ds/
     bottom-screen/      HUD artwork (PNG + grit)
     include/            stubs that replace SDL / Opus
     prepare_assets.py   reads vendor/zelda3/assets/zelda3.sfc and stages the game data for the link
+  easy/                 blank-cart + ROM → lttp-ds.nds for non-technical users
   build.py, Makefile    build. The game data is linked into lttp-ds.nds
 ```
 

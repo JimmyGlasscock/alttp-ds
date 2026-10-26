@@ -2,6 +2,10 @@
 
 The file has to already exist, or a USA ROM has to be present so restool
 can extract one. The .nds links those bytes into the ARM9 binary.
+
+Pass --blank to embed a fixed-size placeholder instead. That produces
+lttp-ds-blank.nds for the easy make_rom.py flow (no DevKitPro needed
+for end users).
 """
 
 import os
@@ -11,6 +15,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "easy"))
+from asset_slot import ASSET_SLOT_SIZE, make_placeholder  # noqa: E402
+
 HOME = Path.home()
 EMBED = ROOT / "build" / "embed" / "zelda3_assets.dat"
 CANONICAL = ROOT / "zelda3_assets.dat"
@@ -134,7 +141,21 @@ def extract(rom):
     return CANONICAL
 
 
-def main():
+def write_blank():
+    print(
+        "assets: embedding blank placeholder (%d bytes) for make_rom.py"
+        % ASSET_SLOT_SIZE
+    )
+    EMBED.parent.mkdir(parents=True, exist_ok=True)
+    EMBED.write_bytes(make_placeholder())
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if "--blank" in argv:
+        write_blank()
+        return
+
     found = first_file(DAT_CANDIDATES)
     if found is not None:
         if not valid_dat(found):
@@ -150,6 +171,9 @@ def main():
             "\n"
             "Copy your USA ROM to vendor/zelda3/assets/zelda3.sfc.\n"
             "USA ROM SHA-256: %s\n"
+            "\n"
+            "Or build a blank ROM for the easy packager:\n"
+            "  python3 build.py blank\n"
             "\n"
             "The ROM stays on your PC and is not committed."
             % USA_SHA256
