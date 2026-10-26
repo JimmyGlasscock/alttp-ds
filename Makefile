@@ -140,8 +140,8 @@ else
 	$(SILENTCMD)"$(PYTHON)" "$(LTTP_ROOT)/platform/nds/prepare_assets.py"
 endif
 
-# Prebuilt cart with an empty asset slot. End users run easy/make_rom.py
-# with their USA .sfc to produce a playable lttp-ds.nds — no DevKitPro.
+# Prebuilt cart with an empty asset slot. End users run make_rom.py with
+# their USA .sfc to produce a playable lttp-ds.nds — no DevKitPro.
 blank:
 	@$(MAKE) LTTP_BLANK=1
 	@cp -f $(TARGET).nds $(TARGET)-blank.nds

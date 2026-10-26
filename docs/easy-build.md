@@ -1,62 +1,39 @@
-# Easy build (no DevKitPro)
+# Easy build (one Python script)
 
-For people who only want a playable `lttp-ds.nds` and already own a USA *A Link to the Past* ROM.
+No DevKitPro. One script on Windows, macOS, and Linux.
 
-## What you get
+## Steps
 
-| File | Role |
-|---|---|
-| `lttp-ds-blank.nds` | Prebuilt DS cart with an empty game-data slot |
-| `zelda3.sfc` | Your ROM (you supply this) |
-| `easy/make_rom.py` | Extracts assets from the ROM and patches them into the blank cart |
+1. Get `make_rom.py` (from this repo, or the **easy** zip on [Releases](https://github.com/JimmyGlasscock/alttp-ds/releases)).
+2. Put your USA `zelda3.sfc` in the **same folder**.
+3. Run:
 
-The script writes **`lttp-ds.nds`**, ready for melonDS or a flashcart.
+```sh
+python make_rom.py
+```
 
-You still need **Python 3.8+** with **Pillow** and **PyYAML** (asset extraction). You do **not** need DevKitPro, make, or a C toolchain.
+On Windows: `py make_rom.py`. You can also double-click `make_rom.py` if `.py` files open with Python.
 
-## From a Release zip
-
-1. Download the **easy** zip from [GitHub Releases](https://github.com/JimmyGlasscock/alttp-ds/releases) (includes the blank `.nds` and the extractor).
-2. Put your USA `zelda3.sfc` in that folder.
-3. Install deps once, then run `make_rom.bat` (Windows) or `./make_rom.sh` (macOS/Linux).
-
-See `easy/README.txt` inside the zip for the exact commands.
+The script installs Pillow/PyYAML into a local folder on first run, downloads the blank cart and asset tools from Releases when they are not already present, then writes **`lttp-ds.nds`**.
 
 USA ROM SHA-256: `66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb`
 
-## From this git repo
+## From a git clone
 
 ```sh
 git clone --recurse-submodules https://github.com/JimmyGlasscock/alttp-ds.git
 cd alttp-ds
+# put zelda3.sfc here, then:
+python make_rom.py
 ```
 
-1. Download `lttp-ds-blank.nds` from Releases into the project root (or into `easy/`).
-2. Copy `zelda3.sfc` next to `easy/make_rom.py`, or to `vendor/zelda3/assets/`.
-3. Set up Python and run:
+If `lttp-ds-blank.nds` is not in the folder yet, the script pulls it from the latest GitHub Release.
+
+## Maintainers
 
 ```sh
-python3 -m venv .venv
-.venv/bin/pip install Pillow PyYAML
-python3 easy/make_rom.py
+python build.py blank                 # needs DevKitPro; no ROM data in the blank
+python tools/pack_easy_release.py     # dist/lttp-ds-blank.nds, make-rom-tools.zip, alttp-ds-easy.zip
 ```
 
-## Maintainers: shipping a blank cart
-
-On a machine with DevKitPro (`nds-dev`):
-
-```sh
-python3 build.py blank
-```
-
-That writes `lttp-ds-blank.nds` (placeholder asset slot, no Nintendo data). Then pack a release zip:
-
-```sh
-python3 tools/pack_easy_release.py
-```
-
-The zip lands in `dist/` and contains the blank cart, `make_rom` scripts, and a copy of the zelda3 asset tools.
-
-### How the placeholder works
-
-The blank build embeds a fixed 768 KiB slot that starts with the magic bytes `ALTTPDS_ASSET_PLACEHOLDER_v1`. `make_rom.py` finds that marker, overwrites the slot with a real `zelda3_assets.dat` extracted from your ROM, and pads with zeros. The playable `.nds` is a single file, so flashcart menus that never reopen the cart still have the game data in RAM.
+Upload those three files on the GitHub Release. End users only ever run `make_rom.py`.

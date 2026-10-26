@@ -165,9 +165,9 @@ def main(argv):
             "Windows looks in C:\\devkitPro. macOS and Linux look in /opt/devkitpro\n"
             "and ~/devkitpro. Or set DEVKITPRO to that directory.\n"
             "\n"
-            "If you only want a playable ROM and already have lttp-ds-blank.nds,\n"
-            "you do not need DevKitPro — put zelda3.sfc next to easy/make_rom.py\n"
-            "and run that script instead. See docs/easy-build.md."
+            "If you only want a playable ROM, you do not need DevKitPro:\n"
+            "put zelda3.sfc next to make_rom.py and run: python make_rom.py\n"
+            "See docs/easy-build.md."
         )
         pause_if_windows_console()
         return code
@@ -207,7 +207,7 @@ def main(argv):
         print("")
         if building_blank and blank_nds.is_file():
             print("Built %s" % blank_nds)
-            print("Ship that file with easy/make_rom.py (see docs/easy-build.md).")
+            print("Upload it on a Release (see docs/easy-build.md).")
         elif playable.is_file():
             print("Built %s" % playable)
     elif result != 0 and not cleaning:

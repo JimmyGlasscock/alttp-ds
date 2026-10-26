@@ -1,7 +1,10 @@
 /build/
 /dist/
 .venv/
-easy/.venv/
+.make_rom_venv/
+__pycache__/
+*.py[cod]
+make-rom-tools.zip
 *.elf
 *.map
 *.nds
