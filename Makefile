@@ -153,7 +153,12 @@ $(GAME_ICON): $(LTTP_ROOT)/$(ICON) $(LTTP_ROOT)/platform/nds/png2banner.py
 	$(SILENTCMD)"$(PYTHON)" "$(LTTP_ROOT)/platform/nds/png2banner.py" $< $@
 endif
 
-$(ARM7_ELF):
+# No file, so the ARM7 makefile runs on every build and replaces a voice
+# driver that was left behind without a dependency file.
+.PHONY: force-arm7
+force-arm7:
+
+$(ARM7_ELF): force-arm7
 	$(MAKE) -C $(LTTP_ROOT)/platform/nds/arm7
 
 $(OFILES_SOURCES) : $(HFILES)

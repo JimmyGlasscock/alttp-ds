@@ -8,6 +8,8 @@
 #include "zelda_save.h"
 #include "zelda_bottom_map.h"
 
+const uint16 *SrcPtr(uint16 src);
+
 uint8_t dma_read(struct Dma *dma, uint16_t adr);
 
 /*
@@ -48,11 +50,12 @@ uint8_t dma_read(struct Dma *dma, uint16_t adr);
  * different subscreen, so it still draws in front. Walking the castle stairs
  * drops him to sprite priority 1, which exists to slip behind a
  * main-screen BG1 lip. These rooms have no such lip, so for that climb
- * only he stays in front of the stone. The arch over the stair is still
- * a priority tile, and that part is drawn over him. The lower stair also
- * sets that bit on the floor tiles south of him. Those stay on the ground:
- * lifting them reprints that floor above the door. Priority 1 everywhere
- * else stays behind the floor, which is how he walks under a bridge.
+ * only he stays in front of the stone. The arch and the wall around the
+ * doorway are drawn over him for that walk. A lower stair also sets the
+ * priority bit on the floor pattern beside the opening. That pattern
+ * stays on the ground: lifting it reprints the floor above the door.
+ * Priority 1 everywhere else stays behind the floor, which is how he
+ * walks under a bridge.
  * The same climb
  * can take every sprite off the main screen and leave it on the
  * subscreen; those are still drawn. When that climb forces every
@@ -178,11 +181,16 @@ static struct {
 	int lamp, door_iris;
 	int bar_under_overlay;
 } pic;
-/* Tile names that tile the ground. A stair lip ORs priority onto that
+/* Names in the room's floor pattern. A stair lip ORs priority onto that
  * pattern; lifting those cells paints the floor over the doorway. */
+static uint8 floor_pattern[1024];
+/* Names used widely with the priority bit clear. The floor is in this
+ * set. So are the wall tiles, which the doorway then marks with priority. */
 static uint8 common_floor[1024];
-/* The same for BG1 (the subscreen floor), counted while baking a stair. */
-static uint8 bg1_floor[1024];
+/* Cells of the doorway during a climb. The wall above the frame has no
+ * priority bit, so it is marked here and drawn over Link. */
+static uint8 stair_cover[64 * 64];
+static uint8 stair_cap[64 * 64];
 
 /* The VRAM words are summed up 32 bits at a time. A tilemap is up to 4096
  * words and the overworld hashes two of them every frame, so a halfword
@@ -532,27 +540,182 @@ static void present_bg1(Ppu *ppu, int split, int lamp) {
 	}
 }
 
-/* The ground pattern shows up dozens of times with priority clear. The
- * arch and the door frame do not. */
-static void mark_common_floor(const Ppu *ppu, uint16 tilemap_adr, int words) {
-	static uint8 count[1024];
+/* The floor filler is eight tiles, drawn on both layers. Anything else
+ * that carries the priority bit is a wall or a cap. */
+static void mark_floor_pattern(void) {
+	uint16 offs[2];
+	int n, i;
+
+	memset(floor_pattern, 0, sizeof floor_pattern);
+	offs[0] = dung_floor_1_filler_tiles;
+	offs[1] = dung_floor_2_filler_tiles;
+	for (n = 0; n < 2; n++) {
+		const uint16 *src;
+
+		if ((offs[n] & 0xf) || offs[n] > 0xf0)
+			continue;
+		src = SrcPtr(offs[n]);
+		for (i = 0; i < 8; i++)
+			floor_pattern[src[i] & 0x3ff] = 1;
+	}
+}
+
+/* SNES tilemaps store a wide or tall room as 32x32 quadrants. */
+static void map_xy(int i, int wider, int higher, int *x, int *y) {
+	int sub;
+
+	if (wider && higher) {
+		int quad = i >> 10;
+
+		sub = i & 0x3ff;
+		*x = (sub & 31) + ((quad & 1) ? 32 : 0);
+		*y = ((sub >> 5) & 31) + ((quad & 2) ? 32 : 0);
+		return;
+	}
+	sub = i & 0x3ff;
+	if (wider) {
+		*x = (sub & 31) + ((i & 0x400) ? 32 : 0);
+		*y = (sub >> 5) & 31;
+		return;
+	}
+	if (higher) {
+		*x = sub & 31;
+		*y = ((sub >> 5) & 31) + ((i & 0x400) ? 32 : 0);
+		return;
+	}
+	*x = i & 31;
+	*y = (i >> 5) & 31;
+}
+
+/* Stair and door caps. A vflip cap is the south edge of the opening. */
+static int arch_cap(int name) {
+	switch (name) {
+	case 0x02c: case 0x02d:
+	case 0x088: case 0x089:
+	case 0x09d:
+	case 0x0b5: case 0x0b6: case 0x0b7: case 0x0b8: case 0x0b9:
+		return 1;
+	}
+	return 0;
+}
+
+/* The blocks of the doorway. Both columns of a north wall are here.
+ * The step (0x0ac), the open hole, and the fill inside a straight
+ * flight (0x007, 0x016, 0x017) are not. Link walks on that fill. */
+static int doorway_wall(int name) {
+	switch (name) {
+	case 0x008: case 0x00d: case 0x010: case 0x018: case 0x078:
+	case 0x050: case 0x051: case 0x060: case 0x061: case 0x070:
+	case 0x090: case 0x091: case 0x096: case 0x097: case 0x0a2: case 0x0a3:
+		return 1;
+	}
+	return 0;
+}
+
+/* Set once the climb masks are built during this lay_maps. The doorway
+ * bake used to scan the tilemaps again on the frame a stair loads a room. */
+static int climb_marked;
+
+static int keep_under_link(int name) {
+	if (name == 0 || name == 0x1ef || name == 0x0ac)
+		return 1;
+	if (name == 0x007 || name == 0x016 || name == 0x017)
+		return 1;
+	if (floor_pattern[name])
+		return 1;
+	if (common_floor[name])
+		return 1;
+	return 0;
+}
+
+static int stair_wall_cell(int x, int y) {
+	if ((unsigned)x >= 64 || (unsigned)y >= 64)
+		return 0;
+	return stair_cover[y * 64 + x];
+}
+
+/* 1 = the opening's own columns. 2 = the wall column on either side.
+ * The step tile is the same name as the wall base, so only a side
+ * column brings that name forward. */
+static void mark_cover_cell(int x, int y, int kind) {
 	int i;
 
+	if ((unsigned)x >= 64 || (unsigned)y >= 64)
+		return;
+	i = y * 64 + x;
+	if (kind == 2 && stair_cover[i] == 1)
+		return;
+	stair_cover[i] = (uint8)kind;
+}
+
+static void mark_cover_column(int x, int y, int vflip, int kind) {
+	int dy;
+
+	mark_cover_cell(x, y, kind);
+	for (dy = 1; dy <= 4; dy++)
+		mark_cover_cell(x, y - dy, kind);
+	/* The jamb is two rows under a north cap. A south cap is vflipped
+	 * and the floor below it stays down. */
+	if (!vflip) {
+		mark_cover_cell(x, y + 1, kind);
+		mark_cover_cell(x, y + 2, kind);
+	}
+}
+
+/* Floor count and the doorway band share one read of each tilemap.
+ * A second pass over VRAM here is what hitched the room a stair enters. */
+static void mark_climb(const Ppu *ppu) {
+	static uint8 count[1024];
+	int layer, i;
+
+	if (climb_marked)
+		return;
+	climb_marked = 1;
 	memset(count, 0, sizeof count);
 	memset(common_floor, 0, sizeof common_floor);
-	for (i = 0; i < words; i++) {
-		uint16 entry = ppu->vram[(tilemap_adr + i) & 0x7fff];
-		int name;
+	memset(stair_cover, 0, sizeof stair_cover);
+	memset(stair_cap, 0, sizeof stair_cap);
+	for (layer = 0; layer < 2; layer++) {
+		const BgLayer *bg = &ppu->bgLayer[layer];
+		int words = map_words(bg->tilemapWider, bg->tilemapHigher);
+		const uint16 *src = map_src(ppu, bg->tilemapAdr, words);
 
-		if (entry & 0x2000)
-			continue;
-		name = entry & 0x3ff;
-		if (count[name] < 255)
-			count[name]++;
+		for (i = 0; i < words; i++) {
+			uint16 entry = src[i];
+			int name = entry & 0x3ff;
+			int x, y;
+
+			if (!(entry & 0x2000)) {
+				if (count[name] < 255)
+					count[name]++;
+				continue;
+			}
+			if (!arch_cap(name))
+				continue;
+			map_xy(i, bg->tilemapWider, bg->tilemapHigher, &x, &y);
+			if ((unsigned)x >= 64 || (unsigned)y >= 64)
+				continue;
+			/* 1 = north cap, 2 = south cap stored vflipped. */
+			stair_cap[y * 64 + x] = (entry & 0x8000) ? 2 : 1;
+			mark_cover_column(x, y, entry & 0x8000, 1);
+		}
 	}
 	for (i = 0; i < 1024; i++)
 		if (count[i] >= 8)
 			common_floor[i] = 1;
+	for (i = 0; i < 64 * 64; i++) {
+		int cap = stair_cap[i];
+		int x, y;
+
+		if (!cap)
+			continue;
+		x = i & 63;
+		y = i >> 6;
+		if (x > 0 && !stair_cap[i - 1])
+			mark_cover_column(x - 1, y, cap == 2, 2);
+		if (x + 1 < 64 && !stair_cap[i + 1])
+			mark_cover_column(x + 1, y, cap == 2, 2);
+	}
 }
 
 static void present_bg2(Ppu *ppu, int lift, int keep_floor) {
@@ -581,13 +744,17 @@ static void present_bg2(Ppu *ppu, int lift, int keep_floor) {
 		u16 blank;
 		int i;
 
-		/* The floor set is the tilemap with priority ignored. It does not
-		 * change on the frames where this map is reused. */
+		/* The floor set is the room's filler, not every repeated name.
+		 * It does not change on the frames where this map is reused. */
 		bake_valid = 0;
-		if (keep_floor)
-			mark_common_floor(ppu, layer->tilemapAdr, words);
-		else
+		if (keep_floor) {
+			mark_floor_pattern();
+			mark_climb(ppu);
+		} else {
+			memset(floor_pattern, 0, sizeof floor_pattern);
 			memset(common_floor, 0, sizeof common_floor);
+			memset(stair_cover, 0, sizeof stair_cover);
+		}
 		memset(used, 0, sizeof used);
 		for (i = 0; i < words; i++)
 			used[src[i] & 0x3ff] = 1;
@@ -600,9 +767,9 @@ static void present_bg2(Ppu *ppu, int lift, int keep_floor) {
 		}
 		blank = (u16)bg2_blank;
 		/* Same split as PpuDrawBackground: 0xb100 is in front of Link,
-		 * 0x7100 stays on the ground behind him. The lower stair also
-		 * sets that bit on the floor tiles south of Link. Those stay
-		 * on the ground; lifting them reprints the floor on the door. */
+		 * 0x7100 stays on the ground behind him. During a stair climb the
+		 * jamb and the wall across the top of the opening come forward
+		 * with the cap. The floor pattern stays on the ground. */
 		if (!lift) {
 			for (i = 0; i < words; i++) {
 				bg2_hi[i] = blank;
@@ -611,9 +778,27 @@ static void present_bg2(Ppu *ppu, int lift, int keep_floor) {
 		} else {
 			for (i = 0; i < words; i++) {
 				uint16 entry = src[i];
+				int name = entry & 0x3ff;
+				int x, y, cover = 0;
 
-				if ((entry & 0x2000) &&
-				    !(keep_floor && common_floor[entry & 0x3ff])) {
+				if (keep_floor && (doorway_wall(name) || name == 0x0ac)) {
+					int cell;
+
+					map_xy(i, layer->tilemapWider,
+						layer->tilemapHigher, &x, &y);
+					cell = stair_wall_cell(x, y);
+					/* The step shares its name with the wall base.
+					 * Beside the opening that base covers him. Under
+					 * the opening it is the stair, and he stands on it. */
+					if (cell && doorway_wall(name))
+						cover = 1;
+					else if (cell == 2 && name == 0x0ac)
+						cover = 1;
+				}
+				/* Priority floor stays on the ground, under the
+				 * sprites. The doorway wall comes forward. */
+				if (((entry & 0x2000) &&
+				     !(keep_floor && keep_under_link(name))) || cover) {
 					bg2_hi[i] = swizzle4(entry);
 					map_buf[3][i] = blank;
 				} else {
@@ -2198,42 +2383,60 @@ static void bake_bg2_doors(Ppu *ppu, int stair) {
 		if (!used_bg1[i] && i != blank_bg1)
 			free_tile[free_n++] = i;
 	}
-	if (stair) {
-		/* The subscreen floor is the pattern BG1 repeats without priority.
-		 * BG2 may not repeat it enough for common_floor to see it. */
-		static uint8 count[1024];
-
-		memset(count, 0, sizeof count);
-		memset(bg1_floor, 0, sizeof bg1_floor);
-		for (i = 0; i < words; i++) {
-			uint16 entry = ppu->vram[(top->tilemapAdr + i) & 0x7fff];
-
-			if (!(entry & 0x2000) && count[entry & 0x3ff] < 255)
-				count[entry & 0x3ff]++;
-		}
-		for (i = 0; i < 1024; i++)
-			bg1_floor[i] = count[i] >= 8;
-	}
+	if (stair)
+		mark_climb(ppu);
 	for (i = 0; i < words; i++) {
 		uint16 above = ppu->vram[(top->tilemapAdr + i) & 0x7fff];
 		uint16 door;
 		int src, dst;
+		int name = above & 0x3ff;
+		int x, y, cover = 0;
 
+		if (stair && (doorway_wall(name) || name == 0x0ac)) {
+			int cell;
+
+			map_xy(i, top->tilemapWider, top->tilemapHigher, &x, &y);
+			cell = stair_wall_cell(x, y);
+			if (cell && doorway_wall(name))
+				cover = 1;
+			else if (cell == 2 && name == 0x0ac)
+				cover = 1;
+		}
 		if (above & 0x2000) {
-			/* The subscreen's own copy of the floor pattern. It belongs
-			 * behind the ground. Promoting it covers the door. Whatever
-			 * BG2 puts on this cell (a wall or jamb with priority) still
-			 * has to be drawn; the floor only stays behind it. */
-			if (stair && (common_floor[above & 0x3ff] || bg1_floor[above & 0x3ff])) {
+			/* The subscreen's own copy of the floor. It belongs behind
+			 * the ground. Promoting it covers the door and the sprites
+			 * standing on that floor. A wall on this cell still has to
+			 * be drawn; the floor only stays behind it. */
+			if (stair && keep_under_link(name) && !cover) {
 				map_buf[2][i] = swizzle4(above);
 			} else {
 				map_buf[1][i] = swizzle4(above);
 				map_buf[2][i] = blank;
 				continue;
 			}
+		} else if (cover) {
+			/* The wall over the opening is on this layer and has no
+			 * priority bit. The cap below it does, and this row has
+			 * to come with it. */
+			map_buf[1][i] = swizzle4(above);
+			map_buf[2][i] = blank;
+			continue;
 		}
 		door = ppu->vram[(ground->tilemapAdr + i) & 0x7fff];
-		if (!(door & 0x2000) || common_floor[door & 0x3ff]) {
+		name = door & 0x3ff;
+		cover = 0;
+		if (stair && (doorway_wall(name) || name == 0x0ac)) {
+			int cell;
+
+			map_xy(i, ground->tilemapWider, ground->tilemapHigher, &x, &y);
+			cell = stair_wall_cell(x, y);
+			if (cell && doorway_wall(name))
+				cover = 1;
+			else if (cell == 2 && name == 0x0ac)
+				cover = 1;
+		}
+		if ((!(door & 0x2000) && !cover) ||
+		    (stair && keep_under_link(name) && !cover)) {
 			map_buf[1][i] = blank;
 			continue;
 		}
@@ -2691,9 +2894,9 @@ static void classify_picture(const Ppu *ppu) {
 		ppu->bgLayer[0].tilemapHigher == ppu->bgLayer[1].tilemapHigher;
 	lift_bg2 = bg2_main && (!bg1_main || scrolls_match);
 	pic.lift_bg2 = lift_bg2;
-	/* The stair arch is a BG1 priority tile. On these floors BG1 is the
-	 * subscreen, so the arch would sit behind Link. For the climb, put
-	 * just those priority tiles in front of him. */
+	/* The stair cap is a priority tile. On these floors BG1 is the
+	 * subscreen, so the cap and the wall over the opening would sit
+	 * behind Link. For the climb, draw both in front of him. */
 	stair_arch = !lamp && climbing_stairs() && player_is_indoors &&
 		bg1_sub && !bg1_main && !overlay && scrolls_match;
 	pic.stair_arch = stair_arch;
@@ -2711,6 +2914,8 @@ static void classify_picture(const Ppu *ppu) {
 
 static void lay_maps(Ppu *ppu) {
 	int bake;
+
+	climb_marked = 0;
 
 	/* BG3 priority 0 and BG2 share the back background. Switching which
 	 * one owns that map has to upload it again. */

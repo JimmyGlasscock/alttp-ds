@@ -66,9 +66,17 @@ DEPENDS := $(OFILES:.o=.d)
 
 # A dependency file written on Windows starts with C:/. GNU make reads
 # that colon as a rule and stops with "target pattern contains no '%'".
+# The object has to go with it. Leaving the Windows ARM7 objects in
+# place compiles a new ARM9 against an old voice driver, and the mixer
+# then reads the IPC at the wrong offsets, so no channel ever starts.
+ifneq ($(strip $(OFILES)),)
 BADDEPS := $(shell grep -l '^[A-Za-z]:' *.d 2>/dev/null)
-ifneq ($(strip $(BADDEPS)),)
-$(shell rm -f $(BADDEPS))
+STALEOBJS := $(BADDEPS:.d=.o)
+STALEOBJS += $(foreach o,$(OFILES),$(if $(wildcard $(o:.o=.d)),,$(o)))
+STRAY := $(filter-out $(OFILES),$(wildcard *.o) $(wildcard *.16.o))
+ifneq ($(strip $(BADDEPS) $(STALEOBJS) $(STRAY)),)
+$(shell rm -f $(BADDEPS) $(STALEOBJS) $(STRAY))
+endif
 endif
 
 $(ARM7ELF): $(OFILES)

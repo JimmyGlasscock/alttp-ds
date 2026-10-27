@@ -6,18 +6,17 @@
   <img width="1200" alt="alttp" src="docs/images/showcase.jpg" />
 </p>
 
-ALTTP DS is a homebrew port of [snesrev/zelda3](https://github.com/snesrev/zelda3), a C reimplementation of the SNES game. It is not an emulator. The game logic runs natively on the DS's ARM9. The picture is built on the DS 2D engine, and the music plays on the DS sound hardware. The bottom screen can show a touch HUD with an item panel, a gear panel, and a live world or dungeon map.
+ALTTP DS is a port of [snesrev/zelda3](https://github.com/snesrev/zelda3), a C reimplementation of the SNES game. The game logic runs natively on the DS's ARM9. The game has been optimized for the DS hardware, and has options to use the touchscreen for the HUD and map.
 
 > **You supply the ROM.** This repo contains no Nintendo ROM and no game assets. Put a legally obtained USA `zelda3.sfc` in `vendor/zelda3/assets` and run `build.py`. This project is not affiliated with or endorsed by Nintendo.
 
 ## Features
 
-### A native port, not an emulator
+### A native port
 
-- **Full game.** The whole game from the title screen onward, running zelda3's reimplemented game logic on the DS's ARM9.
-- **DS 2D engine renderer.** SNES backgrounds, sprites, windows, mosaic, color math, and the door iris map onto DS tile layers, hardware sprites, and palettes. The world map uses a hardware affine layer, so each scanline keeps the Mode 7 perspective.
-- **Cropped screen handled for you.** The SNES picture is 224 lines and the DS screen is 192. The overworld and dungeon cameras scroll a little past room and area edges, so Link and the action stay in view.
-- **Lid handling.** Closing the DS lid pauses the game and the music, and opening it wakes both. On a loaded game, closing the lid opens the save menu.
+- **Full game.** The entire game is playable, running zelda3's reimplemented game logic.
+- **Optimized for DS screen size.** The SNES picture is 224 lines and the DS screen is 192. The overworld and dungeon cameras scroll a little past room and area edges, so Link and the action stay in view.
+- **Lid handling.** Closing the DS lid pauses the game.
 
 ### Bottom-screen HUD and touch controls
 
@@ -26,25 +25,24 @@ Set **HUD** to **Bottom Screen** in Settings and the status bar moves off the to
 - Hearts, magic meter, rupee, bomb and arrow counters, and the equipped item.
 - A **live map**: the world map outdoors and the dungeon map inside a dungeon. It stays black in caves and houses.
 - An **Items** button, which opens and closes the game's item menu.
-- A **Gear** button, which opens a panel with your equipment, bottles, pendants, crystals, hearts, and heart pieces. The game pauses while it is open.
-- **Touch to equip.** Tap an item on the item panel to equip it, with no D-pad needed.
+- A **Gear** button, which opens a panel with your equipment, bottles, pendants, crystals, hearts, and heart pieces.
+- **Touch to equip.** Tap an item on the item panel to equip it.
 
 When no game is running (title, file select, boot), the bottom screen shows a Triforce idle picture.
 
 ### Quality-of-life additions
 
-- **Settings menu.** Open it from the save menu (see [Settings](#settings)).
-- **Title skip.** Pressing a button during the intro jumps to the sword drop, after a short bit of the title theme.
-- **Fast dialogue.** Hold **A** during dialogue that has no text box, such as Zelda's plea. The letters still appear one at a time, only faster.
-- **Launcher icon and title.** The ROM has its own banner icon and title in the DS launcher and in Twilight Menu++.
+- **Settings menu.** Open it by pressing select (see [Settings](#settings)).
+- **Title skip.** Pressing a button during the intro jumps to the sword drop, just like the GBA version.
+- **Fast dialogue.** Hold **A** to fast forward through cutscene dialogue.
 
 ### Settings
 
-Press **Select** in game to open the save menu. It has three rows: **Continue**, **Save and Quit**, and **Settings**. **B** also continues. Settings are saved in your `.sav` file.
+Press **Select** in game to open the save menu. It has three rows: **Continue**, **Save and Quit**, and **Settings**. Settings are saved in your `.sav` file.
 
 | Setting | Options | What it does |
 |---|---|---|
-| HUD | Top Screen / Bottom Screen | Where the status bar and touch HUD live |
+| HUD | Top Screen / Bottom Screen | Where the HUD lives (life, magic meter, etc) |
 | Low HP Indicator | On / Off | The low-health beep |
 | Spawn | Normal / Dungeon | A save made inside a dungeon loads at that dungeon's entrance |
 | Magic Mirror | Normal / Free | Removes magic mirror use restrictions |
@@ -54,8 +52,6 @@ Press **Select** in game to open the save menu. It has three rows: **Continue**,
 | Dark Rooms | Normal / Bright | Bright keeps dark rooms lit, so the lantern is optional |
 | Hair Color | Pink / Blonde | Link's hair color |
 | Button Mapping | | Allows you to remap the controls |
-
-In the menu, **Up/Down** moves, **Left/Right** changes a value, **A** or **Start** confirms on **Save** or **Cancel**, and **B** cancels.
 
 ## Controls
 You can remap the controls however you like in the settings menu.
@@ -108,8 +104,6 @@ python3 build.py
 ```
 
 On Windows, `py build.py` does the same thing. Either command uses `.venv` when the default Python is missing Pillow or PyYAML. `python3 build.py -j8` compiles in parallel. When it finishes, **`lttp-ds.nds`** is in the project root. If `zelda3.sfc` is missing, the build stops and does not write that file. Double-clicking `build.py` on Windows leaves the window open so you can read the error.
-
-If make stops with `target pattern contains no '%'`, dependency files in `platform/nds/arm7/build/` were written on Windows and still contain `C:` paths. Run `python3 build.py clean` and build again. The ARM7 makefile also drops those files when it sees them.
 
 ### 4. Run
 
