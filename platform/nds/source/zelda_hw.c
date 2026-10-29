@@ -855,12 +855,15 @@ static int hud_strip_hidden(void)
 	 * outdoors, 11 the special overworld (lost woods). 15 and 16 are
 	 * the door iris: that circle leaves play while it is still open
 	 * across the status bar. 17 is a fall down a hole, 18 is death,
-	 * 19 a pendant and 22 a crystal. 23 is save and quit: the
-	 * playfield stays up while the screen fades. 24 is Agahnim's defeat:
-	 * the flute bird, then the bat at the pyramid. The bottom screen is
-	 * the idle picture for that, so the bar stays off this screen too.
-	 * 25 is the triforce chamber: the speech is on this layer, and the
-	 * bar stays on the bottom screen. */
+	 * 19 a pendant and 22 a crystal. 21 is Agahnim sending Link to
+	 * the dark world, through Sahasrahla's telepathy. The bottom
+	 * screen is the idle picture for that, so the bar stays off this
+	 * screen too. 23 is save and quit: the playfield stays up while
+	 * the screen fades. 24 is Agahnim's defeat: the flute bird, then
+	 * the bat at the pyramid. The bottom screen is the idle picture
+	 * for that, so the bar stays off this screen too. 25 is the triforce
+	 * chamber: the speech is on this layer, and the bar stays on the
+	 * bottom screen. */
 	switch (mod) {
 	case 5:
 	case 7:
@@ -871,6 +874,7 @@ static int hud_strip_hidden(void)
 	case 17:
 	case 18:
 	case 19:
+	case 21:
 	case 22:
 	case 23:
 	case 24:

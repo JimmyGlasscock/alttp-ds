@@ -1195,6 +1195,13 @@ static int bird_cutscene(void)
 	return main_module_index == 24;
 }
 
+/* Agahnim's mirror warp into the dark world. It runs through the arrival
+ * and Sahasrahla's telepathy, and ends when Link can move again. */
+static int aga_warp(void)
+{
+	return main_module_index == 21;
+}
+
 /* X opens the dungeon map (submodule 3 of the menu module) or the overworld
  * map (submodule 7). The flute's bird map is submodule 10. Choosing a place
  * leaves state 5 for 6, which only fades the world map out; Link is still
@@ -1941,6 +1948,7 @@ static int fade_level;
 static int map_was_open;
 static int over_was_up;
 static int bird_was;
+static int aga_was;
 
 static void set_bottom_fade(int level)
 {
@@ -2040,6 +2048,7 @@ void ZeldaBottomUpdate(void)
 	int map = map_open();
 	int over = game_over_screen();
 	int bird = bird_cutscene();
+	int aga = aga_warp();
 
 	update_top_dim();
 
@@ -2047,22 +2056,26 @@ void ZeldaBottomUpdate(void)
 		map_was_open = map;
 		over_was_up = over;
 		bird_was = bird;
+		aga_was = aga;
 		step_fade(want);
 		finish_rain();
 		return;
 	}
-	/* The map, the game over screen, and the flute-bird cutscene, with
-	 * the HUD on the bottom setting: fade rather than cut. The cutscene
-	 * fades the idle picture in, and fading back to the HUD is the return
-	 * to play below once that module ends. The first frame of a fade is
-	 * the first step of fading out. Continue leaves the game over screen
-	 * and comes back through the load below, which fades the HUD in. */
-	if (map != map_was_open || over != over_was_up || bird != bird_was) {
+	/* The map, the game over screen, the flute-bird cutscene, and
+	 * Agahnim's warp into the dark world, with the HUD on the bottom
+	 * setting: fade rather than cut. Those cutscenes fade the idle
+	 * picture in, and fading back to the HUD is the return to play
+	 * once that module ends. The first frame of a fade is the first
+	 * step of fading out. Continue leaves the game over screen and
+	 * comes back through the load below, which fades the HUD in. */
+	if (map != map_was_open || over != over_was_up || bird != bird_was ||
+	    aga != aga_was) {
 		map_was_open = map;
 		over_was_up = over;
 		bird_was = bird;
+		aga_was = aga;
 		if (!ZeldaHudOnTop() && want != hud_up &&
-		    (in_game() || bird || map || over)) {
+		    (in_game() || bird || aga || map || over)) {
 			fade_phase = kFadeOut;
 			fade_level = 0;
 			step_fade(want);
