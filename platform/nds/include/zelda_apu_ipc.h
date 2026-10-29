@@ -20,12 +20,24 @@
 #define ZELDA_APU_ECHO_DSP_MAX (15 * 512)
 #define ZELDA_APU_ECHO_DELAY_MAX (ZELDA_APU_ECHO_DSP_MAX / 4)
 #define ZELDA_APU_NOISE_SAMPLES 256
+/* One driver frame is 534 samples. The sequencer runs about every 64,
+ * which is the sample at the start plus at most ten ticks. */
+#define ZELDA_APU_SLICES 12
+/* One video frame of the DSP, in samples. The driver clock uses this too. */
+#define ZELDA_APU_FRAME 534
+/* Cache-line padding so a flush of the frame cannot touch the next buffer. */
+#define ZELDA_APU_FRAME_BYTES 544
+/* Played back at the DSP rate. Two frames fit, so a late wake does not wrap. */
+#define ZELDA_APU_BEND_RATE 32000
+#define ZELDA_APU_BEND_RING 2048
 
 enum {
 	ZELDA_VOICE_NOISE = 1,
 	ZELDA_VOICE_PMON = 2,
 	ZELDA_VOICE_ECHO = 4,
-	ZELDA_VOICE_RELEASE = 8
+	ZELDA_VOICE_RELEASE = 8,
+	/* Channel is owned by a sound effect. */
+	ZELDA_VOICE_SFX = 16
 };
 
 typedef struct ZeldaVoiceIpc {
@@ -42,6 +54,14 @@ typedef struct ZeldaVoiceIpc {
 	uint16_t gain_value;
 	uint16_t adsr_rate[4];
 	uint16_t pad;
+	/* Pitch and key state at each sequencer step this frame.
+	 * slice_at in the IPC is the sample time, shared by every voice. */
+	uint16_t slice_pitch[ZELDA_APU_SLICES];
+	uint8_t slice_epoch[ZELDA_APU_SLICES];
+	uint8_t bend;
+	uint8_t bend_pad;
+	/* How many bytes of bend_pcm belong to this frame. */
+	uint16_t bend_n;
 } ZeldaVoiceIpc;
 
 typedef struct ZeldaApuIpc {
@@ -70,4 +90,13 @@ typedef struct ZeldaApuIpc {
 	int16_t *echo_delay_r;
 	int8_t *noise;
 	ZeldaVoiceIpc voice[ZELDA_APU_VOICES];
+	uint16_t slice_at[ZELDA_APU_SLICES];
+	uint8_t slice_count;
+	uint8_t slice_pad[3];
+	/* Per-voice playback ring, PCM8, ZELDA_APU_BEND_RING samples.
+	 * The ARM7 fills these from bend_pcm. */
+	int8_t *bend_ring[ZELDA_APU_VOICES];
+	/* One DSP frame for a pitch bend, PCM8, ZELDA_APU_FRAME samples.
+	 * The ARM9 writes these. */
+	int8_t *bend_pcm[ZELDA_APU_VOICES];
 } ZeldaApuIpc;
