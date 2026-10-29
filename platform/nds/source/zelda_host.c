@@ -41,6 +41,55 @@ void ZeldaApuUnlock(void)
 extern const uint8 zelda3_assets_dat[];
 extern const uint8 zelda3_assets_dat_end[];
 
+/* Ambient sound 1 is the outdoor rain. The Zora waterfall plays that
+ * same sound. Ambient sound 3 is rain indoors. Each is a hard-panned
+ * pair: one voice is the left side and the other is the right. The
+ * levels are linear, 0x50 outdoors and 0x32 indoors. Eight decibels
+ * down is 10^(-8/20), which rounds to 0x20 and 0x14. */
+static void quiet_rain(void)
+{
+	static const struct {
+		uint16 addr;
+		uint8 from, to;
+	} kVol[] = {
+		{ 0x2655, 0x50, 0x20 },
+		{ 0x2666, 0x50, 0x20 },
+		{ 0x267a, 0x32, 0x14 },
+		{ 0x268b, 0x32, 0x14 },
+	};
+	uint8 *bank = (uint8 *)kSoundBank_intro;
+	uint32 size = kSoundBank_intro_SIZE;
+	uint32 i = 0;
+	int n;
+
+	if (!bank)
+		return;
+	while (i + 4 <= size) {
+		uint16 num = bank[i] | ((uint16)bank[i + 1] << 8);
+		uint16 target;
+		uint32 base;
+
+		if (num == 0)
+			break;
+		target = bank[i + 2] | ((uint16)bank[i + 3] << 8);
+		i += 4;
+		if (i + num > size)
+			break;
+		base = i;
+		for (n = 0; n < (int)(sizeof kVol / sizeof kVol[0]); n++) {
+			uint16 addr = kVol[n].addr;
+			uint32 off;
+
+			if (addr < target || (uint32)(addr - target) >= num)
+				continue;
+			off = base + (uint32)(addr - target);
+			if (bank[off] == kVol[n].from)
+				bank[off] = kVol[n].to;
+		}
+		i += num;
+	}
+}
+
 void ZeldaLoadAssets(void)
 {
 	uint8 *data = (uint8 *)zelda3_assets_dat;
@@ -72,6 +121,7 @@ void ZeldaLoadAssets(void)
 			offset += size;
 		}
 	}
+	quiet_rain();
 }
 
 MemBlk FindInAssetArray(int asset, int idx)
