@@ -458,6 +458,38 @@ static int snapshot(ZeldaApuIpc *dst)
 	return 1;
 }
 
+/* Grunts and whooshes hold a full envelope, so the channel volume is
+ * already maxed and the sample itself is what sounds quiet. One extra
+ * bit, clamped, brings them up to the punch effects. The cached bytes
+ * stay put because music uses the same BRR. */
+#define SFX_BOOST_MAX 4096
+static int8_t s_sfx_boost[ZELDA_APU_VOICES][SFX_BOOST_MAX];
+
+static const int8_t *sfx_loud_pcm(unsigned ch, const Voice *v)
+{
+	const int8_t *src;
+	uint32_t n, i;
+
+	if (!(v->flags & ZELDA_VOICE_SFX) || (v->flags & ZELDA_VOICE_NOISE))
+		return v->pcm;
+	if (v->use_gain || v->adsr_rate[2] != 0 || v->sustain < 0x800)
+		return v->pcm;
+	if (!v->pcm || v->bytes < 4 || v->bytes > SFX_BOOST_MAX)
+		return v->pcm;
+	src = v->pcm;
+	n = v->bytes;
+	for (i = 0; i < n; i++) {
+		int s = (int)src[i] << 1;
+
+		if (s > 127)
+			s = 127;
+		if (s < -128)
+			s = -128;
+		s_sfx_boost[ch][i] = (int8_t)s;
+	}
+	return s_sfx_boost[ch];
+}
+
 static void start_pcm(unsigned ch, unsigned vol, unsigned pan, unsigned freq,
 		      const int8_t *pcm, uint32_t bytes, uint32_t loop_byte)
 {
@@ -666,7 +698,9 @@ static void program_voice(const ZeldaApuIpc *ipc, unsigned ch, Voice *v, unsigne
 	}
 	timer = timer_from_freq(freq);
 	if (v->restart || !v->playing) {
-		start_pcm(ch, vol, pan, freq, v->pcm, v->bytes, v->loop_byte);
+		const int8_t *pcm = sfx_loud_pcm(ch, v);
+
+		start_pcm(ch, vol, pan, freq, pcm, v->bytes, v->loop_byte);
 		v->playing = 1;
 		v->restart = 0;
 		v->last_vol = (uint8_t)vol;
