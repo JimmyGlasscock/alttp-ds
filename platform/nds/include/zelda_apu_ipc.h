@@ -37,7 +37,10 @@ enum {
 	ZELDA_VOICE_ECHO = 4,
 	ZELDA_VOICE_RELEASE = 8,
 	/* Channel is owned by a sound effect. */
-	ZELDA_VOICE_SFX = 16
+	ZELDA_VOICE_SFX = 16,
+	/* Channel is playing the outdoor or indoor rain. The ARM7 leaves
+	 * its sample alone so the quieter volume from quiet_rain() holds. */
+	ZELDA_VOICE_RAIN = 32
 };
 
 typedef struct ZeldaVoiceIpc {

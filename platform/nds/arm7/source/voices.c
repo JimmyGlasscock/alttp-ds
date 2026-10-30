@@ -472,6 +472,10 @@ static const int8_t *sfx_loud_pcm(unsigned ch, const Voice *v)
 
 	if (!(v->flags & ZELDA_VOICE_SFX) || (v->flags & ZELDA_VOICE_NOISE))
 		return v->pcm;
+	/* Rain was turned down 8 dB on the ARM9. Doubling its sample would
+	 * give most of that back. */
+	if (v->flags & ZELDA_VOICE_RAIN)
+		return v->pcm;
 	if (v->use_gain || v->adsr_rate[2] != 0 || v->sustain < 0x800)
 		return v->pcm;
 	if (!v->pcm || v->bytes < 4 || v->bytes > SFX_BOOST_MAX)
