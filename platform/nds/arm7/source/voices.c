@@ -41,6 +41,14 @@ typedef struct Voice {
 	unsigned play_freq;
 	unsigned glide_target;
 	unsigned glide_step;
+	uint32_t bend_phase;
+	uint32_t bend_done;
+	uint32_t bend_origin;
+	u64 bend_t0;
+	uint8_t bend_on;
+	uint8_t bend_looped;
+	uint8_t bend_sync;
+	uint8_t play_epoch;
 	uint32_t pos;
 	uint32_t frac;
 	uint32_t echo_pos;
@@ -74,6 +82,8 @@ static int s_sign_r;
 /* 8 kHz samples kept ahead of the mixer. About three wakeups. */
 #define ECHO_LEAD 24
 static int s_noise_ready;
+static unsigned s_bend_timer;
+static uint32_t s_seen_seq;
 
 static int clamp15(int s)
 {
@@ -448,6 +458,42 @@ static int snapshot(ZeldaApuIpc *dst)
 	return 1;
 }
 
+/* Grunts and whooshes hold a full envelope, so the channel volume is
+ * already maxed and the sample itself is what sounds quiet. One extra
+ * bit, clamped, brings them up to the punch effects. The cached bytes
+ * stay put because music uses the same BRR. */
+#define SFX_BOOST_MAX 4096
+static int8_t s_sfx_boost[ZELDA_APU_VOICES][SFX_BOOST_MAX];
+
+static const int8_t *sfx_loud_pcm(unsigned ch, const Voice *v)
+{
+	const int8_t *src;
+	uint32_t n, i;
+
+	if (!(v->flags & ZELDA_VOICE_SFX) || (v->flags & ZELDA_VOICE_NOISE))
+		return v->pcm;
+	/* Rain was turned down 8 dB on the ARM9. Doubling its sample would
+	 * give most of that back. */
+	if (v->flags & ZELDA_VOICE_RAIN)
+		return v->pcm;
+	if (v->use_gain || v->adsr_rate[2] != 0 || v->sustain < 0x800)
+		return v->pcm;
+	if (!v->pcm || v->bytes < 4 || v->bytes > SFX_BOOST_MAX)
+		return v->pcm;
+	src = v->pcm;
+	n = v->bytes;
+	for (i = 0; i < n; i++) {
+		int s = (int)src[i] << 1;
+
+		if (s > 127)
+			s = 127;
+		if (s < -128)
+			s = -128;
+		s_sfx_boost[ch][i] = (int8_t)s;
+	}
+	return s_sfx_boost[ch];
+}
+
 static void start_pcm(unsigned ch, unsigned vol, unsigned pan, unsigned freq,
 		      const int8_t *pcm, uint32_t bytes, uint32_t loop_byte)
 {
@@ -480,8 +526,10 @@ static void silence_all(void)
 
 	for (i = 0; i < 10; i++)
 		stop_channel(i);
-	for (i = 0; i < ZELDA_APU_VOICES; i++)
+	for (i = 0; i < ZELDA_APU_VOICES; i++) {
 		s_voice[i].playing = 0;
+		s_voice[i].bend_on = 0;
+	}
 	s_echo_on = 0;
 }
 
@@ -511,10 +559,11 @@ static unsigned voice_freq(const ZeldaApuIpc *ipc, const Voice *v, const Voice *
 
 /* The driver publishes one pitch per frame. Vibrato is a fraction of a
  * semitone, and chasing it by rewriting the hardware timer every wake
- * buzzes the title theme, so those changes land immediately. A real
- * slide, like the game-over sweep, moves more than a semitone between
- * frames. Take a fixed step of that gap so the sweep arrives within the
- * frame. A new note snaps, and so does a jump of two octaves or more. */
+ * buzzes the title theme, so those changes land immediately. A music
+ * slide moves more than a semitone between frames. Take a fixed step of
+ * that gap so the sweep arrives within the frame. A new note snaps, and
+ * so does a jump of two octaves or more. Sound-effect bends do not use
+ * this; the DSP frame in bend_pcm is what plays. */
 static unsigned glide_freq(Voice *v, unsigned freq, int snap)
 {
 	unsigned cur, hi, lo;
@@ -653,7 +702,9 @@ static void program_voice(const ZeldaApuIpc *ipc, unsigned ch, Voice *v, unsigne
 	}
 	timer = timer_from_freq(freq);
 	if (v->restart || !v->playing) {
-		start_pcm(ch, vol, pan, freq, v->pcm, v->bytes, v->loop_byte);
+		const int8_t *pcm = sfx_loud_pcm(ch, v);
+
+		start_pcm(ch, vol, pan, freq, pcm, v->bytes, v->loop_byte);
 		v->playing = 1;
 		v->restart = 0;
 		v->last_vol = (uint8_t)vol;
@@ -673,6 +724,124 @@ static void program_voice(const ZeldaApuIpc *ipc, unsigned ch, Voice *v, unsigne
 		soundChSetTimer(ch, timer);
 		v->last_timer = (uint16_t)timer;
 	}
+}
+
+/* A pitch bend is already rendered by the DSP on the ARM9: one frame of
+ * PCM, with the gaussian filter and the envelope in the samples. Playing
+ * that back at a fixed rate keeps the sweep. Rewriting the channel timer
+ * to chase the pitch buzzes, and guessing the curve between frames drops
+ * the turns. Steady effects and the music stay on the hardware channels. */
+
+static void bend_stop(unsigned ch, Voice *v)
+{
+	if (!v->bend_on)
+		return;
+	soundChStop(ch);
+	v->bend_on = 0;
+	v->playing = 0;
+}
+
+static u32 bend_hw(const Voice *v)
+{
+	u64 ticks;
+
+	if (!s_bend_timer || !v->playing)
+		return 0;
+	ticks = tickGetCount() - v->bend_t0;
+	return (u32)((ticks * (u64)SOUND_CLOCK) /
+		     ((u64)TICK_FREQ * s_bend_timer));
+}
+
+static void bend_begin(unsigned ch, Voice *v, int8_t *ring)
+{
+	memset(ring, 0, ZELDA_APU_BEND_RING);
+	soundChStop(ch);
+	v->bend_on = 1;
+	v->bend_done = 0;
+	v->playing = 0;
+}
+
+static void bend_level(const ZeldaApuIpc *ipc, Voice *v, unsigned *vol, unsigned *pan)
+{
+	uint16_t gain = v->gain;
+
+	/* The samples already include the envelope. The channel volume is
+	 * the full-open level, which is what a steady note uses at peak. */
+	v->gain = 0x7ff;
+	voice_level(ipc, v, vol, pan);
+	v->gain = gain;
+}
+
+/* Returns 1 while this channel is playing the rendered frames. */
+static int bend_service(ZeldaApuIpc *ipc, unsigned ch, Voice *v,
+			int seq_changed, int play)
+{
+	int8_t *ring = ipc->bend_ring[ch];
+	const int8_t *pcm = ipc->bend_pcm[ch];
+	unsigned vol, pan, i;
+	u32 hw;
+
+	if (!ring)
+		return 0;
+	if (!v->bend_on) {
+		if (!play || !pcm)
+			return 0;
+		bend_begin(ch, v, ring);
+	}
+	hw = bend_hw(v);
+	if (v->playing && hw >= v->bend_done) {
+		if (!play) {
+			bend_stop(ch, v);
+			return 0;
+		}
+		/* The queue ran out as this frame arrived. Start it at the play head. */
+		v->bend_done = hw;
+	}
+	if (play && seq_changed && pcm) {
+		u32 queued = v->bend_done - hw;
+		unsigned n = ipc->voice[ch].bend_n;
+
+		if (n > ZELDA_APU_FRAME)
+			n = ZELDA_APU_FRAME;
+		/* ARM7 has no data cache. The ARM9 flushed these bytes. */
+		if (n && queued + n < ZELDA_APU_BEND_RING) {
+			for (i = 0; i < n; i++)
+				ring[(v->bend_done + i) & (ZELDA_APU_BEND_RING - 1)] = pcm[i];
+			v->bend_done += n;
+		}
+	} else if (v->playing && v->bend_done >= hw &&
+		   v->bend_done - hw < ZELDA_APU_FRAME) {
+		/* Past the queued audio the ring would repeat the swoon. */
+		u32 ahead = v->bend_done - hw;
+
+		for (i = ahead; i < ZELDA_APU_FRAME; i++)
+			ring[(hw + i) & (ZELDA_APU_BEND_RING - 1)] = 0;
+	}
+
+	bend_level(ipc, v, &vol, &pan);
+	if (!v->playing) {
+		if (!s_bend_timer)
+			s_bend_timer = timer_from_freq(ZELDA_APU_BEND_RATE);
+		soundChPreparePcm(ch, vol, SoundVolDiv_1, pan, s_bend_timer,
+				  SoundMode_Repeat, SoundFmt_Pcm8, ring, 0,
+				  ZELDA_APU_BEND_RING / 4);
+		soundChStart(ch);
+		v->bend_t0 = tickGetCount();
+		v->playing = 1;
+		v->last_vol = (uint8_t)vol;
+		v->last_pan = (uint8_t)pan;
+		v->last_timer = (uint16_t)s_bend_timer;
+		return 1;
+	}
+	if (vol != v->last_vol) {
+		soundChSetVolume(ch, vol, SoundVolDiv_1);
+		v->last_vol = (uint8_t)vol;
+	}
+	if (pan != v->last_pan) {
+		soundChSetPan(ch, pan);
+		v->last_pan = (uint8_t)pan;
+	}
+	return 1;
 }
 
 /* Same sums as dsp_handleEcho, at 8 kHz. The delay count is the DSP's
@@ -953,7 +1122,7 @@ void ZeldaVoicesBind(ZeldaApuIpc *ipc)
 void ZeldaVoicesService(void)
 {
 	ZeldaApuIpc ipc;
-	int i;
+	int i, seq_changed;
 	unsigned freq[ZELDA_APU_VOICES];
 
 	if (!snapshot(&ipc))
@@ -985,10 +1154,14 @@ void ZeldaVoicesService(void)
 		return;
 	}
 	s_muted = 0;
+	seq_changed = ipc.seq != s_seen_seq;
+	if (seq_changed)
+		s_seen_seq = ipc.seq;
 
 	for (i = 0; i < ZELDA_APU_VOICES; i++) {
 		Voice *v = &s_voice[i];
 		const ZeldaVoiceIpc *src = &ipc.voice[i];
+		int slide;
 
 		v->pitch = src->pitch;
 		v->volume_l = src->volume_l;
@@ -1004,11 +1177,10 @@ void ZeldaVoicesService(void)
 		v->adsr_rate[1] = src->adsr_rate[1];
 		v->adsr_rate[2] = src->adsr_rate[2];
 		v->adsr_rate[3] = src->adsr_rate[3];
+		slide = (src->flags & ZELDA_VOICE_SFX) && src->bend &&
+			!(src->flags & (ZELDA_VOICE_NOISE | ZELDA_VOICE_PMON));
 		if (v->epoch != src->epoch) {
 			v->epoch = src->epoch;
-			v->state = v->use_gain ? 3 : 0;
-			v->gain = 0;
-			v->rate_counter = 0;
 			v->pos = 0;
 			v->frac = 0;
 			v->echo_pos = 0;
@@ -1017,11 +1189,30 @@ void ZeldaVoicesService(void)
 			v->ended = 0;
 			v->restart = 1;
 			attach_sample(v, &ipc);
+			/* A bend restarts the sample at the sequencer step, so the
+			 * envelope stays put until that step is rendered. */
+			if (!slide || !v->pcm || !ipc.bend_ring[i]) {
+				v->state = v->use_gain ? 3 : 0;
+				v->gain = 0;
+				v->rate_counter = 0;
+			}
 		}
 		if ((v->flags & ZELDA_VOICE_RELEASE) && v->state != 4)
 			v->state = 4;
-		env_step(v, 32);
 		freq[i] = voice_freq(&ipc, v, i ? &s_voice[i - 1] : NULL);
+		if (!(v->flags & (ZELDA_VOICE_NOISE | ZELDA_VOICE_PMON)) &&
+		    (src->bend || v->bend_on)) {
+			/* A new note that does not bend takes the hardware channel. */
+			if (v->bend_on && !src->bend && v->restart)
+				bend_stop((unsigned)i, v);
+			else if (bend_service(&ipc, (unsigned)i, v, seq_changed, src->bend)) {
+				v->restart = 0;
+				continue;
+			}
+		}
+		if (v->bend_on)
+			bend_stop((unsigned)i, v);
+		env_step(v, 32);
 		freq[i] = glide_freq(v, freq[i], v->restart);
 		program_voice(&ipc, (unsigned)i, v, freq[i]);
 	}

@@ -10,6 +10,8 @@
 #include "spc_player.h"
 #include "snes/dsp.h"
 
+typedef char zelda_slice_count_ok[(SPC_TIMELINE == ZELDA_APU_SLICES) ? 1 : -1];
+
 extern void Die(const char *error);
 
 static ZeldaApuIpc *ipc;
@@ -28,6 +30,8 @@ static void *alloc_buf(size_t bytes)
 
 void ZeldaAudioInit(void)
 {
+	int i;
+
 	ipc = alloc_buf(sizeof *ipc);
 	ipc->magic = ZELDA_APU_MAGIC;
 	ipc->pcm = alloc_buf(ZELDA_APU_PCM_BYTES);
@@ -42,6 +46,13 @@ void ZeldaAudioInit(void)
 	DC_InvalidateRange(ipc->echo_delay_l, ZELDA_APU_ECHO_DELAY_MAX * sizeof(int16_t));
 	DC_InvalidateRange(ipc->echo_delay_r, ZELDA_APU_ECHO_DELAY_MAX * sizeof(int16_t));
 	ipc->noise = alloc_buf(ZELDA_APU_NOISE_SAMPLES);
+	for (i = 0; i < ZELDA_APU_VOICES; i++) {
+		ipc->bend_ring[i] = alloc_buf(ZELDA_APU_BEND_RING);
+		/* ARM7 fills the ring. Drop the cache line so a later writeback
+		 * cannot wipe samples the mixer is playing. */
+		DC_InvalidateRange(ipc->bend_ring[i], ZELDA_APU_BEND_RING);
+		ipc->bend_pcm[i] = alloc_buf(ZELDA_APU_FRAME_BYTES);
+	}
 	DC_FlushRange(ipc, sizeof *ipc);
 
 	pxiWaitRemote(PxiChannel_User0);
@@ -51,8 +62,13 @@ void ZeldaAudioInit(void)
 static void publish(SpcPlayer *p)
 {
 	Dsp *dsp = p->dsp;
+	const SpcTimeline *tl = SpcPlayer_Timeline();
 	uint32_t generation = SpcPlayer_SongGeneration();
+	unsigned slices = tl->count;
 	int i;
+
+	if (slices > ZELDA_APU_SLICES)
+		slices = ZELDA_APU_SLICES;
 
 	if (generation != flushed_generation) {
 		DC_FlushRange(p->ram, 65536);
@@ -78,6 +94,9 @@ static void publish(SpcPlayer *p)
 	ipc->reset = dsp->reset ? 1 : 0;
 	ipc->noise_rate = dsp->noiseRate;
 	ipc->spc_ram = p->ram;
+	ipc->slice_count = (uint8_t)slices;
+	if (slices)
+		memcpy(ipc->slice_at, tl->at, slices * sizeof ipc->slice_at[0]);
 
 	for (i = 0; i < ZELDA_APU_VOICES; i++) {
 		DspChannel *c = &dsp->channel[i];
@@ -92,6 +111,14 @@ static void publish(SpcPlayer *p)
 			flags |= ZELDA_VOICE_ECHO;
 		if (c->adsrState == 4)
 			flags |= ZELDA_VOICE_RELEASE;
+		if (p->is_chan_on & (1u << i))
+			flags |= ZELDA_VOICE_SFX;
+		/* Port 1 sounds 1 and 2 are the outdoor rain pair, 3 and 4
+		 * the indoor pair. The Zora waterfall plays the first pair. */
+		if ((p->port1_active & (1u << i)) && (p->is_chan_on & (1u << i)) &&
+		    p->channel[i].sfx_which_sound >= 1 &&
+		    p->channel[i].sfx_which_sound <= 4)
+			flags |= ZELDA_VOICE_RAIN;
 
 		v->pitch = c->pitch;
 		v->volume_l = c->volumeL;
@@ -108,6 +135,22 @@ static void publish(SpcPlayer *p)
 		v->adsr_rate[1] = c->adsrRates[1];
 		v->adsr_rate[2] = c->adsrRates[2];
 		v->adsr_rate[3] = c->adsrRates[3];
+		if (slices) {
+			memcpy(v->slice_pitch, tl->pitch[i], slices * sizeof v->slice_pitch[0]);
+			memcpy(v->slice_epoch, tl->epoch[i], slices);
+		}
+		v->bend = SpcPlayer_BendPlay(i) ? 1 : 0;
+		v->bend_n = 0;
+		if (v->bend && ipc->bend_pcm[i]) {
+			unsigned n = (unsigned)SpcPlayer_BendSamples(i);
+
+			if (n > ZELDA_APU_FRAME)
+				n = ZELDA_APU_FRAME;
+			v->bend_n = (uint16_t)n;
+			if (n)
+				memcpy(ipc->bend_pcm[i], SpcPlayer_BendPcm(i), n);
+			DC_FlushRange(ipc->bend_pcm[i], ZELDA_APU_FRAME_BYTES);
+		}
 	}
 
 	DC_FlushRange(ipc, sizeof *ipc);

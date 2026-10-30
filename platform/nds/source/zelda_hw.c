@@ -236,9 +236,47 @@ static const uint16 *map_src(const Ppu *ppu, uint16 adr, int words) {
 	return wrapped;
 }
 
+/* One bitplane byte spread to eight nibbles, leftmost pixel in the lowest
+ * one. A row of 4bpp is the four planes ORed in at bit 0..3 of each nibble:
+ * four loads instead of sixty-four bit extractions. */
+static uint32 plane_spread[256];
+static int plane_spread_ready;
+
+static void build_plane_spread(void) {
+	int b, px;
+
+	for (b = 0; b < 256; b++) {
+		uint32 w = 0;
+
+		for (px = 0; px < 8; px++)
+			w |= (uint32)((b >> (7 - px)) & 1) << (px * 4);
+		plane_spread[b] = w;
+	}
+	plane_spread_ready = 1;
+}
+
+/* A room's worth of sprites arrives on one frame when Link steps off a
+ * stair. Every slot misses the hash and is converted before that blank,
+ * so the cost of one tile is the cost of the hitch. */
 static void conv4(const uint16 *src, u16 *dst, int pal_off) {
 	int row;
 
+	if (!pal_off) {
+		if (!plane_spread_ready)
+			build_plane_spread();
+		for (row = 0; row < 8; row++) {
+			uint32 lo = src[row];
+			uint32 hi = src[row + 8];
+			uint32 w = plane_spread[lo & 0xff] |
+				(plane_spread[lo >> 8 & 0xff] << 1) |
+				(plane_spread[hi & 0xff] << 2) |
+				(plane_spread[hi >> 8 & 0xff] << 3);
+
+			dst[row * 2] = (u16)w;
+			dst[row * 2 + 1] = (u16)(w >> 16);
+		}
+		return;
+	}
 	for (row = 0; row < 8; row++) {
 		uint8 plane0 = (uint8)src[row];
 		uint8 plane1 = (uint8)(src[row] >> 8);
