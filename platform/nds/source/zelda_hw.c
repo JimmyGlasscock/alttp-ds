@@ -1585,6 +1585,13 @@ enum { kBg3SplitLine = 128 - 1 - kCropY };
 enum { kWinInside = 0x3f, kWinHud = 0x01, kWinNoWater = 0x1b };
 
 static int bg3_split_on;
+/* Lower text box, the one used while Link is in the upper half. It is
+ * tile row 18 of BG3. The status bar is the same background, so the extra
+ * scroll starts at the box and the bar stays put. */
+enum { kTextBoxLowY = 18 * 8, kTextBoxLift = 5 };
+static int text_lift_on;
+static int text_lift_line;
+static u16 text_lift_y;
 static int scanline_handler;
 static void m7_hblank(void);
 static void scanline_irq_sync(void);
@@ -1804,6 +1811,12 @@ static void scanline_hblank(void) {
 			REG_BG3VOFS = bg3_top_y;
 		}
 	}
+	if (text_lift_on && line < 261) {
+		unsigned next = line + 1;
+
+		if (next >= (unsigned)text_lift_line && next < (unsigned)SCREEN_HEIGHT)
+			REG_BG0VOFS = text_lift_y;
+	}
 	if (line >= 261) {
 		iris_latch_frame();
 		wave_latch_frame();
@@ -1817,9 +1830,9 @@ static void scanline_hblank(void) {
 
 static void scanline_irq_sync(void) {
 	/* 2: mode 7 owns the interrupt. The iris window must not come back on
-	 * over the map. 1: letter grid, door iris, or mirror wave. */
+	 * over the map. 1: letter grid, lower text box, door iris, or mirror wave. */
 	int want = m7_on ? 2 :
-		(bg3_split_on || iris_on || (iris_publish & 1) ||
+		(bg3_split_on || text_lift_on || iris_on || (iris_publish & 1) ||
 		 wave_on || (wave_publish & 1)) ? 1 : 0;
 
 	if (scanline_handler == want)
@@ -2523,6 +2536,19 @@ static void present_scroll(const Ppu *ppu, int back_bg3) {
 	}
 	hw_scroll_x[0] = (int)ppu->bgLayer[2].hScroll;
 	hw_scroll_y[0] = sy2 - kHudDrop;
+	/* messaging_module is 1 while a box is up. 0x6244 is the lower one. */
+	text_lift_on = 0;
+	if (messaging_module != 0 && text_msgbox_topleft == 0x6244) {
+		int line = kTextBoxLowY - hw_scroll_y[0] - kTextBoxLift;
+
+		if (line <= 0) {
+			hw_scroll_y[0] += kTextBoxLift;
+		} else if (line < SCREEN_HEIGHT) {
+			text_lift_on = 1;
+			text_lift_line = line;
+			text_lift_y = (u16)(hw_scroll_y[0] + kTextBoxLift);
+		}
+	}
 	if (back_bg3) {
 		hw_scroll_x[3] = (int)ppu->bgLayer[2].hScroll;
 		hw_scroll_y[3] = sy2;
