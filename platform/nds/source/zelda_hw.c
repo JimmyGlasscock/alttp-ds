@@ -877,12 +877,19 @@ static int bg3_lookup(int key) {
 }
 
 /* Hearts, magic, and the item box. Text boxes and the inventory grid
- * are other BG3 tiles, so this strip is the status bar alone. */
+ * are other BG3 tiles, so this strip is the status bar alone.
+ * The dungeon map draws its frame into these same words. While that
+ * picture is up the strip has to stay, or the top of the frame goes
+ * black. State 0 is still the room fading out. From 6 the room is
+ * being put back. */
 static int hud_strip_hidden(void)
 {
 	int mod;
 
 	if (ZeldaHudOnTop())
+		return 0;
+	if (main_module_index == 14 && submodule_index == 3 &&
+	    overworld_map_state >= 1 && overworld_map_state < 6)
 		return 0;
 	mod = main_module_index;
 	if (mod == 14)
