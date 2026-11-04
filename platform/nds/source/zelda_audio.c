@@ -114,11 +114,15 @@ static void publish(SpcPlayer *p)
 		if (p->is_chan_on & (1u << i))
 			flags |= ZELDA_VOICE_SFX;
 		/* Port 1 sounds 1 and 2 are the outdoor rain pair, 3 and 4
-		 * the indoor pair. The Zora waterfall plays the first pair. */
-		if ((p->port1_active & (1u << i)) && (p->is_chan_on & (1u << i)) &&
-		    p->channel[i].sfx_which_sound >= 1 &&
-		    p->channel[i].sfx_which_sound <= 4)
-			flags |= ZELDA_VOICE_RAIN;
+		 * the indoor pair. The Zora waterfall plays the first pair.
+		 * Sounds 9 and 10 are the dark world wind pair. */
+		{
+			uint8_t sfx = p->channel[i].sfx_which_sound;
+
+			if ((p->port1_active & (1u << i)) && (p->is_chan_on & (1u << i)) &&
+			    ((sfx >= 1 && sfx <= 4) || sfx == 9 || sfx == 10))
+				flags |= ZELDA_VOICE_RAIN;
+		}
 
 		v->pitch = c->pitch;
 		v->volume_l = c->volumeL;
