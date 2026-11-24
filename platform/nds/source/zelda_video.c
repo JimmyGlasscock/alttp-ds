@@ -203,6 +203,8 @@ static int font_code(int ch)
 		return ch - 'a' + 26;
 	if (ch >= '0' && ch <= '9')
 		return ch - '0' + 52;
+	if (ch == '.')
+		return 0x41;
 	if (ch == '>')
 		return 0x44;
 	return 0x59;

@@ -366,6 +366,7 @@ static int settings_caret_y(void)
 static void settings_draw(void)
 {
 	const char *title = "Settings";
+	const char *version_number = "v1.0";
 	int value_x = settings_value_x();
 	int i;
 
@@ -381,6 +382,8 @@ static void settings_draw(void)
 	}
 	ZeldaVideoMenuText(kTextX, kSaveY, "Save");
 	ZeldaVideoMenuText(kTextX, kCancelY, "Cancel");
+	ZeldaVideoMenuText(248 - ZeldaVideoMenuWidth(version_number), kCancelY,
+		version_number);
 	ZeldaVideoMenuText(kCaretX, settings_caret_y(), ">");
 }
 
