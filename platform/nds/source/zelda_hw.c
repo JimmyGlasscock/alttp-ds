@@ -1599,6 +1599,7 @@ enum { kTextBoxLowY = 18 * 8, kTextBoxLift = 5 };
 static int text_lift_on;
 static int text_lift_line;
 static u16 text_lift_y;
+static u16 text_unlift_y;
 static int scanline_handler;
 static void m7_hblank(void);
 static void scanline_irq_sync(void);
@@ -1818,11 +1819,20 @@ static void scanline_hblank(void) {
 			REG_BG3VOFS = bg3_top_y;
 		}
 	}
-	if (text_lift_on && line < 261) {
-		unsigned next = line + 1;
+	if (text_lift_on) {
+		/* The extra scroll is only from the box down. Line 0 has to
+		 * start on the bar's own offset: the previous picture leaves
+		 * the lifted value in the register, and a late present would
+		 * draw the bar 5 pixels high for a frame. */
+		if (line >= 261) {
+			REG_BG0VOFS = text_unlift_y;
+		} else {
+			unsigned next = line + 1;
 
-		if (next >= (unsigned)text_lift_line && next < (unsigned)SCREEN_HEIGHT)
-			REG_BG0VOFS = text_lift_y;
+			if (next >= (unsigned)text_lift_line &&
+			    next < (unsigned)SCREEN_HEIGHT)
+				REG_BG0VOFS = text_lift_y;
+		}
 	}
 	if (line >= 261) {
 		iris_latch_frame();
@@ -2543,14 +2553,15 @@ static void present_scroll(const Ppu *ppu, int back_bg3) {
 	}
 	hw_scroll_x[0] = (int)ppu->bgLayer[2].hScroll;
 	hw_scroll_y[0] = sy2 - kHudDrop;
-	/* messaging_module is 1 while a box is up. 0x6244 is the lower one. */
+	text_unlift_y = (u16)hw_scroll_y[0];
+	/* messaging_module is 1 while a box is up. 0x6244 is the lower one.
+	 * The extra 5 pixels are only the box. Applying them to the whole
+	 * layer (or leaving them on line 0) jumps the status bar. */
 	text_lift_on = 0;
 	if (messaging_module != 0 && text_msgbox_topleft == 0x6244) {
 		int line = kTextBoxLowY - hw_scroll_y[0] - kTextBoxLift;
 
-		if (line <= 0) {
-			hw_scroll_y[0] += kTextBoxLift;
-		} else if (line < SCREEN_HEIGHT) {
+		if (line > 0 && line < SCREEN_HEIGHT) {
 			text_lift_on = 1;
 			text_lift_line = line;
 			text_lift_y = (u16)(hw_scroll_y[0] + kTextBoxLift);
@@ -3053,29 +3064,28 @@ void ZeldaHwPresent(Ppu *ppu) {
 		ZeldaHwBuildMaps(ppu);
 	pic.ready = 0;
 
-	/* The map was built before this blank. Copy it before line 0, with
-	 * the scroll that belongs to it. A copy that slips into the picture
+	/* Offsets first. The lower box leaves BG0 five pixels further down
+	 * the tilemap; that has to be cleared before line 0, or the status
+	 * bar draws at the uncropped position for a frame. Map copies after
+	 * that still belong in this blank. A copy that slips into the picture
 	 * snows the frame, and a scroll that lands without the map shifts
 	 * the whole overworld for a frame. */
-	flush_map_jobs();
-
-	/* The shut circle has to be clipped before line 0. The lamp hole
-	 * waits until the scroll below is written. */
-	if (pic.door_iris)
-		present_iris(ppu);
-
-	/* Offsets, then the iris, then sprites. All three land while VCOUNT is
-	 * still in vblank. Tile bytes after them do not fit there. Brightness
-	 * stays black through that upload when this frame leaves a force blank.
-	 * Spotlight_open leaves a closed circle; the iris is armed before the
-	 * upload so that circle is already latched when line 0 is drawn.
-	 * Scroll changes on the next line, so it has to be written before the
-	 * tile upload. Writing it afterwards splits the picture on whatever
-	 * line the upload has reached: running, and the pan into the next room. */
 	ZeldaHwUseMasterBright(1);
 	if (pic.cover && fade_level < 0)
 		REG_MASTER_BRIGHT = inidisp_to_bright(0x80);
 	present_scroll(ppu, pic.show_bg3_lo);
+	flush_map_jobs();
+
+	/* The shut circle has to be clipped before line 0. The lamp hole
+	 * waits until the scroll above is written. */
+	if (pic.door_iris)
+		present_iris(ppu);
+
+	/* Iris, then sprites. Both land while VCOUNT is still in vblank.
+	 * Tile bytes after them do not fit there. Brightness stays black
+	 * through that upload when this frame leaves a force blank.
+	 * Spotlight_open leaves a closed circle; the iris is armed before the
+	 * upload so that circle is already latched when line 0 is drawn. */
 	present_wave(pic.show_bg3_lo);
 	if (!pic.door_iris)
 		present_iris(ppu);
