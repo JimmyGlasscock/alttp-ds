@@ -330,6 +330,22 @@ static void clear_tile(u16 *gfx, int tile) {
 		dst[i] = 0;
 }
 
+/* The front layer is filled with this index wherever a stair cap is not
+ * drawn. The clear in lay_maps runs after that map has already been copied
+ * and after line 0, so the first frame the subscreen is on shows whatever
+ * pixels the slot still holds. Zero it in the blank, before the copy. */
+static void clear_blank_bg1_now(void) {
+	u16 *dst;
+	int i;
+
+	if (blank_bg1 < 0 || used_bg1[blank_bg1])
+		return;
+	dst = BG_GFX + 2 * 8192 + blank_bg1 * 16;
+	for (i = 0; i < 16; i++)
+		dst[i] = 0;
+	tile_hash[0][blank_bg1] = 0;
+}
+
 static void upload4_tile(const Ppu *ppu, int bank, u16 *gfx, uint16 tile_adr, int tile) {
 	uint16 addr = (uint16)((tile_adr + tile * 16) & 0x7fff);
 	uint32 h = hash_words(ppu->vram, addr, 16);
@@ -1418,6 +1434,42 @@ static int climbing_stairs(void) {
 	default:
 		return 0;
 	}
+}
+
+/* The 1F floor tile is empty, so the subscreen shows through it. On the
+ * spiral stair that tile stays on screen until the quadrant in front of
+ * the camera is uploaded. The first upload is a different quadrant, and
+ * the fade is still black then, so waiting for any map change puts the
+ * subscreen back while the empty floor is what is drawn. The four
+ * uploads finish at spiral step 14, before the fade-in. */
+static int subscreen_was_up;
+static int subscreen_hold;
+
+static int hold_new_subscreen(void) {
+	int up = pic.bg1_sub && !pic.bg1_main && !pic.lamp;
+
+	if (!(up && climbing_stairs() && submodule_index == 14)) {
+		subscreen_was_up = up;
+		subscreen_hold = 0;
+		return 0;
+	}
+	if (!subscreen_was_up)
+		subscreen_hold = 1;
+	subscreen_was_up = 1;
+	if (subscreen_hold && subsubmodule_index > 14)
+		subscreen_hold = 0;
+	return subscreen_hold;
+}
+
+/* Spiral steps 3 through 10 are the pause after the fade hits black and
+ * before the fade back in. The SNES picture stays black there. On the DS
+ * the floor layer is still enabled, and the room load paints it for one
+ * frame before the hide at the end of the present, which is already past
+ * line 0. Hide it at the start of vblank. */
+static int spiral_black_gap(void) {
+	if (main_module_index != 7 || submodule_index != 14)
+		return 0;
+	return subsubmodule_index >= 3 && subsubmodule_index <= 10;
 }
 
 /* LinkOam_Main writes his body, sword, shield, and shadow into this block.
@@ -3074,6 +3126,15 @@ void ZeldaHwPresent(Ppu *ppu) {
 	if (pic.cover && fade_level < 0)
 		REG_MASTER_BRIGHT = inidisp_to_bright(0x80);
 	present_scroll(ppu, pic.show_bg3_lo);
+	/* Before the map copy, and before line 0. A hide later in this
+	 * present is still the previous picture. */
+	if (spiral_black_gap()) {
+		bgHide(bg_id[1]);
+		bgHide(bg_id[2]);
+		bgHide(bg_id[3]);
+		BG_PALETTE[0] = 0;
+	}
+	clear_blank_bg1_now();
 	flush_map_jobs();
 
 	/* The shut circle has to be clipped before line 0. The lamp hole
@@ -3113,7 +3174,13 @@ void ZeldaHwPresent(Ppu *ppu) {
 		bgHide(bg_id[0]);
 	}
 
-	if (pic.lamp) {
+	int hide_subscreen = hold_new_subscreen();
+	int room_black = spiral_black_gap();
+
+	if (room_black) {
+		bgHide(bg_id[1]);
+		bgHide(bg_id[2]);
+	} else if (pic.lamp) {
 		/* In front of Link and the floor, behind the status bar. The
 		 * blend adds this light onto whichever of those is showing.
 		 * Door frames stay between the light and the floor. */
@@ -3173,14 +3240,22 @@ void ZeldaHwPresent(Ppu *ppu) {
 		 * the opaque floor covers it, so the room and Link stay solid.
 		 * With no ground (the title), this layer is the picture. Doorways
 		 * stay in front of Link. During a stair climb the arch is the
-		 * priority part of this layer, and it is on the front layer too. */
-		bgSetPriority(bg_id[2], 3);
-		bgShow(bg_id[2]);
-		if (bg2_front_on_slot1 || pic.stair_arch) {
-			bgSetPriority(bg_id[1], 1);
-			bgShow(bg_id[1]);
-		} else {
+		 * priority part of this layer, and it is on the front layer too.
+		 * A spiral climb that turns this layer on still has the empty
+		 * floor until the last quadrant upload. The subscreen stays
+		 * off until that upload, or it is the whole picture. */
+		if (hide_subscreen) {
 			bgHide(bg_id[1]);
+			bgHide(bg_id[2]);
+		} else {
+			bgSetPriority(bg_id[2], 3);
+			bgShow(bg_id[2]);
+			if (bg2_front_on_slot1 || pic.stair_arch) {
+				bgSetPriority(bg_id[1], 1);
+				bgShow(bg_id[1]);
+			} else {
+				bgHide(bg_id[1]);
+			}
 		}
 	} else if (bg2_front_on_slot1) {
 		bgSetPriority(bg_id[1], 1);
@@ -3191,7 +3266,10 @@ void ZeldaHwPresent(Ppu *ppu) {
 		bgHide(bg_id[2]);
 	}
 
-	if (pic.bg2_on) {
+	if (room_black) {
+		bgHide(bg_id[3]);
+		BG_PALETTE[0] = 0;
+	} else if (pic.bg2_on) {
 		/* Main-screen BG2 is in the same band as BG1 priority 0: layer 2
 		 * (BG1) is in front of layer 3, Link is in front of both, and
 		 * sprites 0/1 are behind both. Subscreen-only BG2 is the title
@@ -3204,7 +3282,11 @@ void ZeldaHwPresent(Ppu *ppu) {
 	} else {
 		bgHide(bg_id[3]);
 	}
-	REG_DISPCNT |= DISPLAY_SPR_ACTIVE | DISPLAY_SPR_1D | DISPLAY_SPR_1D_SIZE_32;
+	REG_DISPCNT |= DISPLAY_SPR_1D | DISPLAY_SPR_1D_SIZE_32;
+	if (room_black)
+		REG_DISPCNT &= ~DISPLAY_SPR_ACTIVE;
+	else
+		REG_DISPCNT |= DISPLAY_SPR_ACTIVE;
 	present_mosaic(ppu);
 	present_overlay_blend(ppu, pic.overlay, pic.back_add, pic.bridge);
 	{
