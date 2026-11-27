@@ -1758,31 +1758,44 @@ static void refresh_magic(void)
 
 /* Building the four snapshots decodes a few thousand pixels, and doing all
  * of it every frame is enough to push a frame past its time, which slows the
- * game and the music with it. What they are built from is small: the HUD's
+ * game and the music with it. What they are built from is small: the item's
  * tile entries, the BG3 palettes, and four counts. A checksum of those says
- * whether anything changed, and only then is everything rebuilt. The tile
+ * whether anything changed, and only then is everything rebuilt. The hearts,
+ * the meter, and the counts each change on their own while they fill, so
+ * each has its own check and only that snapshot is rebuilt. The tile
  * graphics themselves can be reloaded without those changing, so otherwise
  * one snapshot is checked each frame, round robin. */
 static u32 dyn_sig(void)
 {
 	const Ppu *ppu = g_zenv.ppu;
-	const u16 *buf = hud_tile_indices_buffer;
 	u16 item[4];
 	u32 h = 2166136261u;
-	int i, r;
+	int i;
 
-	/* The 2x item and the hearts. Not the meter or the counters: those
+	/* The 2x item. Not the hearts, the meter, or the counters: those
 	 * change every frame as they fill, and have their own checks. The
 	 * item entries are the menu slot under the cursor while the menu is
 	 * up, so moving the cursor redraws the 2x icon this frame. */
 	item_entries(item);
 	for (i = 0; i < 4; i++)
 		h = (h ^ item[i]) * 16777619u;
+	for (i = 0; i < 32; i++)
+		h = (h ^ ppu->cgram[i]) * 16777619u;
+	return h;
+}
+
+/* The heart tile entries. Refill plays a four-frame animation on the one
+ * that is filling, so this changes every frame until that heart is drawn
+ * full. Only the hearts are drawn from it. */
+static u32 heart_sig(void)
+{
+	const u16 *buf = hud_tile_indices_buffer;
+	u32 h = 2166136261u;
+	int r, i;
+
 	for (r = 0; r < kHeartRows; r++)
 		for (i = 0; i < kHeartCols; i++)
 			h = (h ^ buf[kHeartWord + r * 32 + i]) * 16777619u;
-	for (i = 0; i < 32; i++)
-		h = (h ^ ppu->cgram[i]) * 16777619u;
 	return h;
 }
 
@@ -1809,7 +1822,7 @@ static u32 counts_sig(void)
 	return (h ^ (u32)link_num_arrows) * 16777619u;
 }
 
-static u32 last_magic_sig, last_counts_sig;
+static u32 last_magic_sig, last_counts_sig, last_heart_sig;
 static int check_next;
 
 static void refresh_dynamic(void)
@@ -1817,19 +1830,21 @@ static void refresh_dynamic(void)
 	u32 sig = dyn_sig();
 	u32 msig = magic_sig();
 	u32 csig = counts_sig();
+	u32 hsig = heart_sig();
 
 	if (sig != last_sig) {
 		last_sig = sig;
 		last_magic_sig = msig;
 		last_counts_sig = csig;
+		last_heart_sig = hsig;
 		refresh_counters();
 		refresh_item();
 		refresh_hearts();
 		refresh_magic();
 		return;
 	}
-	/* Rupees pouring in or the meter filling change one thing a frame, so
-	 * redraw just that. */
+	/* Rupees pouring in, the meter filling, or a heart refilling change
+	 * one thing a frame, so redraw just that. */
 	if (csig != last_counts_sig) {
 		last_counts_sig = csig;
 		refresh_counts();
@@ -1837,6 +1852,10 @@ static void refresh_dynamic(void)
 	if (msig != last_magic_sig) {
 		last_magic_sig = msig;
 		refresh_magic();
+	}
+	if (hsig != last_heart_sig) {
+		last_heart_sig = hsig;
+		refresh_hearts();
 	}
 	/* The safety net, every other frame: rebuilding a snapshot is the most
 	 * expensive thing this screen does on a frame where nothing changed. */

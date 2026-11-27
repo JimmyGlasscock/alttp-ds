@@ -399,6 +399,59 @@ static uint32 sig_map(const Ppu *ppu, uint16 adr, int words) {
 	return hash_words(ppu->vram, adr, words);
 }
 
+/* Hash [addr, addr + n), keeping the even bulk on the fast path. */
+static uint32 hash_span(const uint16 *vram, unsigned addr, unsigned n)
+{
+	uint32 h = 2166136261u;
+
+	if (!n)
+		return h;
+	if (addr + n > 0x8000u)
+		return hash_words(vram, (uint16)addr, (int)n);
+	if (addr & 1) {
+		h = (h ^ vram[addr]) * 16777619u;
+		addr++;
+		n--;
+	}
+	if (n & 1) {
+		n--;
+		h = (h ^ vram[addr + n]) * 16777619u;
+	}
+	if (n)
+		h = (h ^ hash_words(vram, (uint16)addr, (int)n)) * 16777619u;
+	return h ? h : 1u;
+}
+
+/* The status bar is this many words, copied in one run. Heart refill
+ * rewrites a word of it every frame. */
+enum { kHudStripWords = 165 };
+
+/* Hash a tilemap with [skip_at, skip_at + skip_n) left out. */
+static uint32 sig_map_hole(const Ppu *ppu, uint16 adr, int words,
+	unsigned skip_at, int skip_n)
+{
+	unsigned start = adr;
+	unsigned end = (unsigned)adr + (unsigned)words;
+	unsigned skip_end;
+	uint32 h;
+
+	if (skip_n <= 0 || end < start || end > 0x8000u)
+		return sig_map(ppu, adr, words);
+	skip_end = skip_at + (unsigned)skip_n;
+	if (skip_at < start)
+		skip_at = start;
+	if (skip_end > end)
+		skip_end = end;
+	if (skip_at >= skip_end)
+		return sig_map(ppu, adr, words);
+	h = 2166136261u;
+	if (skip_at > start)
+		h = (h ^ hash_span(ppu->vram, start, skip_at - start)) * 16777619u;
+	if (skip_end < end)
+		h = (h ^ hash_span(ppu->vram, skip_end, end - skip_end)) * 16777619u;
+	return h ? h : 1u;
+}
+
 /* Text BG offsets take effect on the next scanline. They are committed at
  * the start of vblank. bgInit writes 0 into the layer it rebuilds, so the
  * committed offsets are written back before that 0 can cover a line. */
@@ -450,6 +503,10 @@ static struct {
 	int higher;
 	int map_base;
 	int tile_base;
+	/* A copy of the whole map leaves these at 0. A status-bar update
+	 * sets them so vblank does not recopy the rest of the map. */
+	int byte_off;
+	int bytes;
 	int on;
 } map_job[4];
 
@@ -477,15 +534,19 @@ static void flush_map_jobs(void) {
 	if (!vblank_margin())
 		return;
 	for (slot = 0; slot < 4; slot++) {
-		int bytes;
+		int bytes = map_job[slot].bytes;
+		int off = map_job[slot].byte_off;
+		u8 *src;
 
 		if (!map_job[slot].on)
 			continue;
 		ensure_size(slot, map_job[slot].wider, map_job[slot].higher,
 			map_job[slot].map_base, map_job[slot].tile_base);
-		bytes = map_job[slot].words * 2;
-		DC_FlushRange((void *)map_job[slot].src, (uint32)bytes);
-		dmaCopyWords(3, (void *)map_job[slot].src, bgGetMapPtr(bg_id[slot]),
+		if (!bytes)
+			bytes = map_job[slot].words * 2;
+		src = (u8 *)map_job[slot].src + off;
+		DC_FlushRange(src, (uint32)bytes);
+		dmaCopyWords(3, src, (u8 *)bgGetMapPtr(bg_id[slot]) + off,
 			(uint32)bytes);
 		if (slot == 1) {
 			slot1_up.src = map_job[1].src;
@@ -506,7 +567,17 @@ static void queue_map(int slot, const u16 *src, int words,
 	map_job[slot].higher = higher;
 	map_job[slot].map_base = map_base;
 	map_job[slot].tile_base = tile_base;
+	map_job[slot].byte_off = 0;
+	map_job[slot].bytes = 0;
 	map_job[slot].on = 1;
+}
+
+static void queue_map_span(int slot, const u16 *src, int words,
+	int wider, int higher, int map_base, int tile_base,
+	int byte_off, int bytes) {
+	queue_map(slot, src, words, wider, higher, map_base, tile_base);
+	map_job[slot].byte_off = byte_off;
+	map_job[slot].bytes = bytes;
 }
 
 static int bg1_split_mode = -1;
@@ -953,17 +1024,86 @@ static int item_menu_hidden(void)
 	return !ZeldaHudOnTop() && main_module_index == 14 && submodule_index == 1;
 }
 
+/* One BG3 map word. blank forces the cell off, which is the status bar
+ * while that bar is drawn on the bottom screen. */
+static void paint_bg3(const Ppu *ppu, int i, unsigned at, int blank)
+{
+	uint16 entry;
+	int tile;
+	int pal;
+	int slot;
+	u16 out;
+
+	if (blank) {
+		map_buf[0][i] = 0;
+		bg3_lo[i] = 0;
+		return;
+	}
+	entry = ppu->vram[at];
+	tile = entry & 0x3ff;
+	pal = (entry >> 10) & 7;
+	slot = bg3_lookup((tile << 3) | pal);
+	if (slot < 0) {
+		map_buf[0][i] = 0;
+		bg3_lo[i] = 0;
+		return;
+	}
+	out = (u16)slot;
+	if (entry & 0x4000)
+		out |= 1 << 10;
+	if (entry & 0x8000)
+		out |= 1 << 11;
+	out |= (u16)((pal >> 2) << 12);
+	/* Priority 1 is the HUD, in front of sprites. Priority 0 is
+	 * the name text, which the wallpaper has to cover. */
+	if (entry & 0x2000) {
+		map_buf[0][i] = out;
+		bg3_lo[i] = 0;
+	} else {
+		map_buf[0][i] = 0;
+		bg3_lo[i] = out;
+	}
+}
+
+/* The status bar as a word span inside this tilemap, widened to a
+ * multiple of two words so the copy is 4-byte aligned. */
+static int hud_span(uint16 adr, int words, unsigned hud_at, int *begin, int *bytes)
+{
+	unsigned start = adr;
+	unsigned end = (unsigned)adr + (unsigned)words;
+	int b, e;
+
+	if (hud_at < start || hud_at + (unsigned)kHudStripWords > end)
+		return 0;
+	b = (int)(hud_at - start);
+	e = b + kHudStripWords;
+	if (b & 1)
+		b--;
+	if (e & 1)
+		e++;
+	if (b < 0 || e > words)
+		return 0;
+	*begin = b;
+	*bytes = (e - b) * 2;
+	return 1;
+}
+
 static void present_bg3(Ppu *ppu, int show_low) {
 	BgLayer *layer = &ppu->bgLayer[2];
 	int words = map_words(layer->tilemapWider, layer->tilemapHigher);
-	uint32 sig = sig_map(ppu, layer->tilemapAdr, words);
+	uint32 sig;
 	u16 *gfx;
 	int i;
 	int hide;
 	int hide_all;
 	unsigned hud_at;
+	int span_at = 0;
+	int span_bytes = 0;
+	int in_span;
 	static int hud_hide_applied = -1;
 	static int menu_hide_applied = -1;
+	/* Checksum of the map with the status bar left out. */
+	static uint32 bg3_hole;
 
 	gfx = BG_GFX + 6 * 8192;
 	hide = hud_strip_hidden();
@@ -982,49 +1122,54 @@ static void present_bg3(Ppu *ppu, int show_low) {
 		map_valid[2] = 0;
 	}
 
-	if (!map_valid[2] || map_sig[2] != sig) {
-		hud_at = word_7E0219 ? word_7E0219 : 0x6040;
-		for (i = 0; i < words; i++) {
-			unsigned at = (layer->tilemapAdr + i) & 0x7fff;
-			uint16 entry;
-			int tile;
-			int pal;
-			int slot;
-			u16 out;
+	hud_at = word_7E0219 ? word_7E0219 : 0x6040;
+	in_span = hud_span(layer->tilemapAdr, words, hud_at, &span_at, &span_bytes);
+	/* While the bar is blanked, a heart filling rewrites only that run.
+	 * Hashing it in made this whole map look new every frame of the
+	 * animation, and rebuilding it is what hitched. */
+	if (hide && !hide_all && in_span)
+		sig = sig_map_hole(ppu, layer->tilemapAdr, words, hud_at, kHudStripWords);
+	else
+		sig = sig_map(ppu, layer->tilemapAdr, words);
 
-			if (hide_all || (hide && at >= hud_at && at < hud_at + 165)) {
-				map_buf[0][i] = 0;
-				bg3_lo[i] = 0;
-				continue;
-			}
-			entry = ppu->vram[at];
-			tile = entry & 0x3ff;
-			pal = (entry >> 10) & 7;
-			slot = bg3_lookup((tile << 3) | pal);
-			if (slot < 0) {
-				map_buf[0][i] = 0;
-				bg3_lo[i] = 0;
-				continue;
-			}
-			out = (u16)slot;
-			if (entry & 0x4000)
-				out |= 1 << 10;
-			if (entry & 0x8000)
-				out |= 1 << 11;
-			out |= (u16)((pal >> 2) << 12);
-			/* Priority 1 is the HUD, in front of sprites. Priority 0 is
-			 * the name text, which the wallpaper has to cover. */
-			if (entry & 0x2000) {
-				map_buf[0][i] = out;
-				bg3_lo[i] = 0;
-			} else {
-				map_buf[0][i] = 0;
-				bg3_lo[i] = out;
-			}
+	if (!map_valid[2] || map_sig[2] != sig) {
+		int only_bar = 0;
+
+		if (!hide_all && in_span) {
+			uint32 hole = (hide && !hide_all) ? sig :
+				sig_map_hole(ppu, layer->tilemapAdr, words,
+					hud_at, kHudStripWords);
+
+			only_bar = map_valid[2] && !hide && hole == bg3_hole;
+			bg3_hole = hole;
 		}
-		queue_map(0, map_buf[0], words, layer->tilemapWider, layer->tilemapHigher, 0, 6);
-		if (show_low)
-			queue_map(3, bg3_lo, words, layer->tilemapWider, layer->tilemapHigher, 12, 6);
+		if (only_bar) {
+			int n = span_bytes / 2;
+
+			for (i = 0; i < n; i++) {
+				unsigned at = (layer->tilemapAdr + span_at + i) & 0x7fff;
+
+				paint_bg3(ppu, span_at + i, at, 0);
+			}
+			queue_map_span(0, map_buf[0], words,
+				layer->tilemapWider, layer->tilemapHigher, 0, 6,
+				span_at * 2, span_bytes);
+			if (show_low)
+				queue_map_span(3, bg3_lo, words,
+					layer->tilemapWider, layer->tilemapHigher, 12, 6,
+					span_at * 2, span_bytes);
+		} else {
+			for (i = 0; i < words; i++) {
+				unsigned at = (layer->tilemapAdr + i) & 0x7fff;
+				int blank = hide_all || (hide && at >= hud_at &&
+					at < hud_at + (unsigned)kHudStripWords);
+
+				paint_bg3(ppu, i, at, blank);
+			}
+			queue_map(0, map_buf[0], words, layer->tilemapWider, layer->tilemapHigher, 0, 6);
+			if (show_low)
+				queue_map(3, bg3_lo, words, layer->tilemapWider, layer->tilemapHigher, 12, 6);
+		}
 		map_sig[2] = sig;
 		map_valid[2] = 1;
 	}
